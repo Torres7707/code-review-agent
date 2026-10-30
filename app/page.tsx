@@ -9,7 +9,20 @@
 //   4. 用 useState 管 textarea；点 Review 时 sendMessage({ text: code })
 //   5. 在结果区遍历 messages → message.parts，渲染 part.type === "text" 的 part.text
 
+"use client";
+import { useChat } from "@ai-sdk/react";
+import { DefaultChatTransport } from "ai";
+import { useEffect, useState } from "react";
+
 export default function Home() {
+  const [input, setInput] = useState("");
+  const { messages, sendMessage, status, stop } = useChat({
+    transport: new DefaultChatTransport({ api: "/api/review" }),
+  });
+
+  useEffect(() => {
+    console.log(status, messages);
+  }, [status, messages]);
   return (
     <main className="mx-auto flex max-w-3xl flex-col gap-4 p-8">
       <h1 className="text-2xl font-bold">React Code Review Agent</h1>
@@ -17,16 +30,33 @@ export default function Home() {
         className="h-64 w-full rounded border p-3 font-mono text-sm"
         placeholder="把你的 React 代码粘贴到这里…"
         // TODO(you): value / onChange
+        value={input}
+        onChange={(e) => setInput(e.target.value)}
       />
       <button
         type="button"
         className="self-start rounded bg-black px-4 py-2 text-white disabled:opacity-50"
         // TODO(you): onClick → sendMessage；status 不是 "ready" 时 disabled
+        onClick={() => sendMessage({ text: input })}
+        disabled={status !== "ready"}
       >
         Review
       </button>
       <section className="min-h-32 whitespace-pre-wrap rounded border p-3 text-sm">
-        {/* TODO(you): 在这里渲染流式返回的 review 结果 */}
+        {messages.map((message) => (
+          <>
+            {message.role === "assistant" ? (
+              <div key={message.id}>
+                {message.parts
+                  .filter((part) => part.type === "text")
+                  .map((part) => part.text)
+                  .join("")}
+              </div>
+            ) : (
+              ""
+            )}
+          </>
+        ))}
       </section>
     </main>
   );
