@@ -21,11 +21,9 @@ try {
     stream: toUIMessageStream({
       stream: result.stream,
       onError: (error) => {
-        // 默认会掩成 "An error occurred."；开发时把 message 透传给前端
+        // 完整错误只打服务端日志；不要把 message 原样发给浏览器
         console.error(error);
-        if (error instanceof Error) return error.message;
-        if (typeof error === "string") return error;
-        return "Unknown error";
+        return "评审失败，请稍后重试";
       },
     }),
   });

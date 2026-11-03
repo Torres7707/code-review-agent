@@ -48,7 +48,7 @@ export default function Home() {
         type="button"
         className="self-start rounded bg-black px-4 py-2 text-white disabled:opacity-50"
         onClick={() => stop()}
-        disabled={status !== "streaming"}
+        disabled={!isBusy}
       >
         Stop
       </button>
