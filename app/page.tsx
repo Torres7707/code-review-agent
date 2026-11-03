@@ -16,9 +16,11 @@ import { useEffect, useState } from "react";
 
 export default function Home() {
   const [input, setInput] = useState("");
-  const { messages, sendMessage, status, stop, error } = useChat({
+  const { messages, sendMessage, status, stop, error, clearError } = useChat({
     transport: new DefaultChatTransport({ api: "/api/review" }),
   });
+
+  const isBusy = status === "submitted" || status === "streaming";
 
   return (
     <main className="mx-auto flex max-w-3xl flex-col gap-4 p-8">
@@ -33,9 +35,12 @@ export default function Home() {
       <button
         type="button"
         className="self-start rounded bg-black px-4 py-2 text-white disabled:opacity-50"
-        // TODO(you): onClick → sendMessage；status 不是 "ready" 时 disabled
-        onClick={() => sendMessage({ text: input })}
-        disabled={status !== "ready"}
+        onClick={() => {
+          // status === "error" 时也要能重发；先清掉上次错误
+          if (error) clearError();
+          sendMessage({ text: input });
+        }}
+        disabled={isBusy}
       >
         Review
       </button>
