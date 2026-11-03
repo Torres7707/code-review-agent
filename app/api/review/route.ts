@@ -6,7 +6,7 @@ import { REVIEW_PROMPT } from "@/lib/prompt";
 export const maxDuration = 30;
 
 export async function POST(req: Request) {
-
+try {
   const {messages} : {messages:UIMessage[]} = await req.json();
   const modelMessages = await convertToModelMessages(messages);
   const result = streamText({
@@ -15,9 +15,26 @@ export async function POST(req: Request) {
     messages: modelMessages,    // v7 里它是 async，要 await
     abortSignal: req.signal,                             // 用户关页面/中断时停止生成
   });
+  // streamText 会先返回；真正的模型错误（如 apikey 无效）发生在流消费时，
+  // 外层 try/catch 捕不到，要靠 toUIMessageStream 的 onError 写进 SSE。
   return createUIMessageStreamResponse({
-    stream: toUIMessageStream({stream:result.stream})
+    stream: toUIMessageStream({
+      stream: result.stream,
+      onError: (error) => {
+        // 默认会掩成 "An error occurred."；开发时把 message 透传给前端
+        console.error(error);
+        if (error instanceof Error) return error.message;
+        if (typeof error === "string") return error;
+        return "Unknown error";
+      },
+    }),
   });
+} catch (error) {
+  // 只覆盖请求体解析等「流开始前」的同步失败
+  console.error(error);
+  return Response.json({ error: "Internal Server Error" }, { status: 500 });
+}
+}
   // TODO(you) Step 2 —— 按顺序实现（ai v7 API，名字已对照 node_modules/ai 的类型确认）：
   //
   // 1. import { streamText, convertToModelMessages, type UIMessage } from "ai";
@@ -41,4 +58,4 @@ export async function POST(req: Request) {
   // 写完后删掉下面这段 501。
   // void req;
   // return Response.json({ error: "not implemented yet" }, { status: 501 });
-}
+
