@@ -1,4 +1,6 @@
 @import "tailwindcss";
+@plugin "@tailwindcss/typography";
+@import "streamdown/styles.css";
 
 :root {
   --background: #ffffff;

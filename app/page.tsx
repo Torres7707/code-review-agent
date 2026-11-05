@@ -12,7 +12,8 @@
 "use client";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { Streamdown } from "streamdown";
 
 export default function Home() {
   const [input, setInput] = useState("");
@@ -28,7 +29,6 @@ export default function Home() {
       <textarea
         className="h-64 w-full rounded border p-3 font-mono text-sm"
         placeholder="把你的 React 代码粘贴到这里…"
-        // TODO(you): value / onChange
         value={input}
         onChange={(e) => setInput(e.target.value)}
       />
@@ -36,7 +36,6 @@ export default function Home() {
         type="button"
         className="self-start rounded bg-black px-4 py-2 text-white disabled:opacity-50"
         onClick={() => {
-          // status === "error" 时也要能重发；先清掉上次错误
           if (error) clearError();
           sendMessage({ text: input });
         }}
@@ -57,21 +56,23 @@ export default function Home() {
           {error.message}
         </p>
       ) : null}
-      <section className="min-h-32 whitespace-pre-wrap rounded border p-3 text-sm">
-        {messages.map((message) => (
-          <div key={message.id}>
-            {message.role === "assistant" ? (
-              <div>
-                {message.parts
-                  .filter((part) => part.type === "text")
-                  .map((part) => part.text)
-                  .join("")}
-              </div>
-            ) : (
-              ""
-            )}
-          </div>
-        ))}
+      <section className="prose prose-sm min-h-32 max-w-none rounded border p-3 dark:prose-invert">
+        {messages.map((message) =>
+          message.role === "assistant" ? (
+            <div key={message.id}>
+              {message.parts.map((part, index) =>
+                part.type === "text" ? (
+                  <Streamdown
+                    key={`${message.id}-${index}`}
+                    isAnimating={part.state === "streaming"}
+                  >
+                    {part.text}
+                  </Streamdown>
+                ) : null,
+              )}
+            </div>
+          ) : null,
+        )}
       </section>
     </main>
   );
