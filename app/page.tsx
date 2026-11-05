@@ -14,12 +14,14 @@ import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
 import { useState } from "react";
 import { Streamdown } from "streamdown";
+import type { MyUIMessage } from "@/lib/types";
 
 export default function Home() {
   const [input, setInput] = useState("");
-  const { messages, sendMessage, status, stop, error, clearError } = useChat({
-    transport: new DefaultChatTransport({ api: "/api/review" }),
-  });
+  const { messages, sendMessage, status, stop, error, clearError } =
+    useChat<MyUIMessage>({
+      transport: new DefaultChatTransport({ api: "/api/review" }),
+    });
 
   const isBusy = status === "submitted" || status === "streaming";
 
@@ -37,7 +39,11 @@ export default function Home() {
         className="self-start rounded bg-black px-4 py-2 text-white disabled:opacity-50"
         onClick={() => {
           if (error) clearError();
-          sendMessage({ text: input });
+          sendMessage({ text: input },{
+            body:{
+              customKey:'customValue'
+            }
+          });
         }}
         disabled={isBusy}
       >
@@ -60,6 +66,8 @@ export default function Home() {
         {messages.map((message) =>
           message.role === "assistant" ? (
             <div key={message.id}>
+              {message.metadata?.createdAt &&
+        new Date(message.metadata.createdAt).toLocaleTimeString()}
               {message.parts.map((part, index) =>
                 part.type === "text" ? (
                   <Streamdown
@@ -70,6 +78,9 @@ export default function Home() {
                   </Streamdown>
                 ) : null,
               )}
+               {message.metadata?.totalTokens && (
+        <span>{message.metadata.totalTokens} tokens</span>
+      )}
             </div>
           ) : null,
         )}

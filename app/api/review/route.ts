@@ -1,13 +1,15 @@
 // POST /api/review —— 这是你要自己写的核心（Step 2）。
 // 现在只返回 501，保证 lint / build 能通过、页面能打开。
-import { streamText, convertToModelMessages, type UIMessage, createUIMessageStreamResponse, toUIMessageStream } from "ai";
+import { streamText, convertToModelMessages, createUIMessageStreamResponse, toUIMessageStream } from "ai";
 import { REVIEW_PROMPT } from "@/lib/prompt";
+import type { MyUIMessage } from "@/lib/types";
 // 流式响应最长允许 30 秒（Vercel Functions）。
 export const maxDuration = 30;
 
 export async function POST(req: Request) {
 try {
-  const {messages} : {messages:UIMessage[]} = await req.json();
+  const {messages,customKey} : {messages:MyUIMessage[],customKey:string} = await req.json();
+  console.log(customKey);
   const modelMessages = await convertToModelMessages(messages);
   const result = streamText({
     model: process.env.AI_MODEL ?? "openai/gpt-5-mini", // AI Gateway 的 "provider/model" 字符串
@@ -20,6 +22,20 @@ try {
   return createUIMessageStreamResponse({
     stream: toUIMessageStream({
       stream: result.stream,
+      messageMetadata: ({part})=>{
+        if(part.type === 'start'){
+          return {
+            createdAt: Date.now(),
+          model: 'gpt-5-mini',
+          };
+        }
+
+        if(part.type==='finish'){
+          return {
+            totalTokens: part.totalUsage.totalTokens,
+          };
+        }
+      },
       onError: (error) => {
         // 完整错误只打服务端日志；不要把 message 原样发给浏览器
         console.error(error);
