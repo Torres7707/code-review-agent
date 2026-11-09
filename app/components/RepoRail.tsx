@@ -1,14 +1,6 @@
 "use client";
 
-import type { PR, Repo } from "@/lib/mock";
-
-const SEV_LANGUAGE: Record<string, string> = {
-  TypeScript: "TS",
-  JavaScript: "JS",
-  Python: "PY",
-  Go: "GO",
-  Rust: "RS",
-};
+import type { PR, Repo } from "@/lib/types";
 
 function RepoRow({
   repo,
@@ -59,6 +51,11 @@ function PRRow({
   active: boolean;
   onClick: () => void;
 }) {
+  const timeLabel = pr.hoursAgo !== undefined
+    ? `${pr.hoursAgo}h ago`
+    : pr.updatedAt
+      ? new Date(pr.updatedAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })
+      : "";
   return (
     <button
       type="button"
@@ -90,11 +87,13 @@ function PRRow({
         <span className="flex items-center gap-2 text-[11px] text-[var(--text-muted)]">
           <span>{pr.author}</span>
           <span>·</span>
-          <span>{pr.hoursAgo}h ago</span>
-          <span className="ml-auto flex items-center gap-1">
-            <span className="tabnum text-[#7ee787]">+{pr.additions}</span>
-            <span className="tabnum text-[#ffa198]">-{pr.deletions}</span>
-          </span>
+          <span>{timeLabel}</span>
+          {pr.additions !== undefined ? (
+            <span className="ml-auto flex items-center gap-1">
+              <span className="tabnum text-[#7ee787]">+{pr.additions}</span>
+              <span className="tabnum text-[#ffa198]">-{pr.deletions}</span>
+            </span>
+          ) : null}
         </span>
       </span>
     </button>

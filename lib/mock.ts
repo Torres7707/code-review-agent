@@ -1,53 +1,6 @@
-export type Severity = "high" | "medium" | "low";
+import type { Issue, PR, Repo, DiffLine, FileDiff, Severity } from "@/lib/types";
 
-export type Issue = {
-  id: string;
-  severity: Severity;
-  title: string;
-  file: string;
-  startLine: number;
-  endLine?: number;
-  why: string;
-  fix: string;
-  status: "open" | "resolved";
-};
-
-export type Repo = {
-  id: string;
-  owner: string;
-  name: string;
-  language: string;
-  stars: number;
-  updatedAt: string;
-};
-
-export type PR = {
-  id: string;
-  number: number;
-  title: string;
-  author: string;
-  hoursAgo: number;
-  filesChanged: number;
-  additions: number;
-  deletions: number;
-  branch: string;
-};
-
-export type DiffLine = {
-  type: "context" | "add" | "del";
-  oldNo?: number;
-  newNo?: number;
-  content: string;
-  severity: Severity | null;
-  issueId: string | null;
-};
-
-export type FileDiff = {
-  path: string;
-  additions: number;
-  deletions: number;
-  lines: DiffLine[];
-};
+export type { Issue, PR, Repo, DiffLine, FileDiff, Severity };
 
 export const REPOS: Repo[] = [
   { id: "nextjs", owner: "vercel", name: "next.js", language: "TypeScript", stars: 124800, updatedAt: "2h" },

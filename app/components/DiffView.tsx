@@ -1,6 +1,6 @@
 "use client";
 
-import type { DiffLine, FileDiff } from "@/lib/mock";
+import type { DiffLine, FileDiff } from "@/lib/types";
 
 function LineRow({
   line,

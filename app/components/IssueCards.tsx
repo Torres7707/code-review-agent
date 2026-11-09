@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import type { Issue, Severity } from "@/lib/mock";
+import type { Issue, Severity } from "@/lib/types";
 
 const SEV_LABEL: Record<Severity, string> = {
   high: "High",

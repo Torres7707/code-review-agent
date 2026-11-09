@@ -1,95 +1,194 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { AuthGate } from "@/app/components/AuthGate";
 import { DiffView } from "@/app/components/DiffView";
 import { Header } from "@/app/components/Header";
 import { IssueCards } from "@/app/components/IssueCards";
 import { RepoRail } from "@/app/components/RepoRail";
-import { FILE_DIFFS, ISSUES, PRS, REPOS } from "@/lib/mock";
-import type { PR } from "@/lib/mock";
-
-const DEMO_USER = {
-  login: "torreswang",
-  avatar: "https://avatars.githubusercontent.com/u/14485943?v=4",
-};
+import { FILE_DIFFS, ISSUES, REPOS } from "@/lib/mock";
+import type { FileDiff, GitHubUser, Issue, PR, Repo } from "@/lib/types";
 
 export function CodeReviewApp() {
-  const [authed, setAuthed] = useState(false);
-  const [activeRepoId, setActiveRepoId] = useState<string | null>("nextjs");
-  const [activePrId, setActivePrId] = useState<string | null>("pr-4821");
+  const [user, setUser] = useState<GitHubUser | null | "loading">("loading");
+  const [repos, setRepos] = useState<Repo[] | null>(null);
+  const [prs, setPrs] = useState<PR[]>([]);
+  const [activeRepoId, setActiveRepoId] = useState<string | null>(null);
+  const [activePrId, setActivePrId] = useState<string | null>(null);
   const [activeIssueId, setActiveIssueId] = useState<string | null>(null);
+  const [fileDiffs, setFileDiffs] = useState<FileDiff[]>([]);
+  const [issues, setIssues] = useState<Issue[]>([]);
   const [streamedIds, setStreamedIds] = useState<string[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
-  const streamTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Detect existing session on mount.
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/me")
+      .then((r) => r.json())
+      .then((d: { user: GitHubUser | null }) => {
+        if (!cancelled) setUser(d.user);
+      })
+      .catch(() => {
+        if (!cancelled) setUser(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const activeRepo = useMemo(
+    () => (repos ?? []).find((r) => r.id === activeRepoId) ?? null,
+    [repos, activeRepoId],
+  );
   const prsForRepo = useMemo(
-    () => (activeRepoId ? PRS[activeRepoId] ?? [] : []),
-    [activeRepoId],
+    () => (activeRepo ? prs : []),
+    [activeRepo, prs],
   );
   const activePr = useMemo(
-    () => prsForRepo.find((p) => p.id === activePrId) ?? null,
-    [prsForRepo, activePrId],
-  );
-  const fileDiffs = useMemo(
-    () => (activePrId ? FILE_DIFFS[activePrId] ?? [] : []),
-    [activePrId],
-  );
-  const issueList = useMemo(
-    () => (activePrId ? ISSUES[activePrId] ?? [] : []),
-    [activePrId],
+    () => prs.find((p) => p.id === activePrId) ?? null,
+    [prs, activePrId],
   );
 
-  // When the active PR changes, clear state and stream issues back in.
+  // Load repos after auth.
   useEffect(() => {
-    if (streamTimer.current) clearTimeout(streamTimer.current);
-    setActiveIssueId(null);
-    setStreamedIds([]);
-    setIsStreaming(true);
+    if (!user) return;
+    let cancelled = false;
+    fetch("/api/repos")
+      .then((r) => r.json())
+      .then((d: { repos: Repo[] }) => {
+        if (!cancelled) setRepos(d.repos);
+      })
+      .catch(() => {
+        if (!cancelled) setRepos([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [user]);
 
-    // Stream in with a 700ms stagger, one per card.
+  // Load PRs when a repo is picked.
+  useEffect(() => {
+    if (!activeRepo) return;
+    let cancelled = false;
+    fetch(`/api/repos/${activeRepo.owner}/${activeRepo.name}/prs`)
+      .then((r) => r.json())
+      .then((d: { prs: PR[] }) => {
+        if (!cancelled) setPrs(d.prs);
+      })
+      .catch(() => {
+        if (!cancelled) setPrs([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeRepo]);
+
+  // Load diff for the active PR.
+  useEffect(() => {
+    if (!activeRepo || !activePr) return;
+    let cancelled = false;
+    fetch(`/api/repos/${activeRepo.owner}/${activeRepo.name}/prs/${activePr.number}/diff`)
+      .then((r) => r.json())
+      .then((d: { diffs: FileDiff[] }) => {
+        if (!cancelled) setFileDiffs(d.diffs);
+      })
+      .catch(() => {
+        if (!cancelled) setFileDiffs([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeRepo, activePr]);
+
+  // TODO: replace mock issue stream with POST /api/review on the loaded diff.
+  // Reset is folded into the interval effect: the initial setState for the
+  // streaming mock runs inside the timer callback, not the effect body.
+  useEffect(() => {
+    let timer: ReturnType<typeof setInterval> | null = null;
     let i = 0;
-    const interval = setInterval(() => {
-      if (i >= issueList.length || !issueList[i]) {
-        clearInterval(interval);
+    const mockIssues = activePrId ? ISSUES[activePrId] ?? [] : [];
+    const start = () => {
+      setStreamedIds([]);
+      setActiveIssueId(null);
+      setIssues(mockIssues);
+      if (mockIssues.length === 0) {
         setIsStreaming(false);
         return;
       }
-      setStreamedIds((prev) => [...prev, issueList[i]?.id ?? ""]);
-      i += 1;
-    }, 650);
-
-    return () => clearInterval(interval);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+      setIsStreaming(true);
+      timer = setInterval(() => {
+        if (i >= mockIssues.length) {
+          if (timer) clearInterval(timer);
+          setIsStreaming(false);
+          return;
+        }
+        const id = mockIssues[i]?.id ?? "";
+        setStreamedIds((prev) => [...prev, id]);
+        i += 1;
+      }, 650);
+    };
+    const kickoff = setTimeout(start, 0);
+    return () => {
+      clearTimeout(kickoff);
+      if (timer) clearInterval(timer);
+    };
   }, [activePrId]);
 
-  const onPickIssue = useCallback((id: string) => {
-    setActiveIssueId((prev) => (prev === id ? null : id));
-  }, []);
+  const onPickRepo = useCallback(
+    (id: string) => {
+      setActiveRepoId(id);
+      setActivePrId(null);
+    },
+    [],
+  );
 
   const onPickPR = useCallback((pr: PR) => {
     setActivePrId(pr.id);
   }, []);
 
-  if (!authed) {
+  const signOut = useCallback(() => {
+    fetch("/api/auth/signout", { method: "POST" }).then(() => {
+      setUser(null);
+      setRepos(null);
+      setPrs([]);
+      setActiveRepoId(null);
+      setActivePrId(null);
+    });
+  }, []);
+
+  if (user === "loading") {
     return (
       <>
         <Header user={null} />
-        <AuthGate onSignIn={() => setAuthed(true)} />
+        <div className="flex h-[calc(100vh-3rem)] items-center justify-center bg-[var(--bg-base)] text-[13px] text-[var(--text-muted)]">
+          Loading…
+        </div>
+      </>
+    );
+  }
+
+  if (!user) {
+    return (
+      <>
+        <Header user={null} />
+        <AuthGate onSignIn={() => {
+          window.location.href = "/api/auth/github";
+        }} />
       </>
     );
   }
 
   return (
     <div className="code-review-workspace flex h-screen flex-col bg-[var(--bg-base)]">
-      <Header user={DEMO_USER} />
+      <Header user={{ login: user.login, avatar: user.avatar_url }} onSignOut={signOut} />
       <div className="flex min-h-0 flex-1">
         <RepoRail
-          repos={REPOS}
+          repos={repos && repos.length > 0 ? repos : REPOS}
           activeRepoId={activeRepoId}
           prs={prsForRepo}
           activePrId={activePrId}
-          onPickRepo={setActiveRepoId}
+          onPickRepo={onPickRepo}
           onPickPR={onPickPR}
         />
         <main className="code-review-main flex min-w-0 flex-1">
@@ -105,11 +204,12 @@ export function CodeReviewApp() {
                         · {activePr.branch}
                       </span>
                     </div>
-                    <div className="mt-0.5 tabnum text-[11px] text-[var(--text-muted)]">
-                      <span className="text-[#7ee787]">+{activePr.additions}</span>{" "}
-                      <span className="text-[#ffa198]">-{activePr.deletions}</span>{" "}
-                      · {activePr.filesChanged} files · open {activePr.hoursAgo}h ago
-                    </div>
+                    {activePr.additions !== undefined ? (
+                      <div className="mt-0.5 tabnum text-[11px] text-[var(--text-muted)]">
+                        <span className="text-[#7ee787]">+{activePr.additions}</span>{" "}
+                        <span className="text-[#ffa198]">-{activePr.deletions}</span>
+                      </div>
+                    ) : null}
                   </div>
                   <span
                     className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] ${
@@ -123,17 +223,17 @@ export function CodeReviewApp() {
               </div>
             ) : null}
             <DiffView
-              files={fileDiffs}
+              files={activePr ? (fileDiffs.length > 0 ? fileDiffs : FILE_DIFFS[activePr.id] ?? []) : []}
               activeIssueId={activeIssueId}
               onLineClick={(id) => setActiveIssueId(id)}
             />
           </section>
           <IssueCards
-            issues={issueList}
+            issues={issues}
             streamedIds={streamedIds}
             activeId={activeIssueId}
             isStreaming={isStreaming}
-            onPick={onPickIssue}
+            onPick={setActiveIssueId}
           />
         </main>
       </div>
