@@ -1,28 +1,142 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
-@import "streamdown/styles.css";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --bg-base: #0d1117;
+  --bg-panel: #161b22;
+  --bg-raised: #1c2128;
+  --bg-hover: #21262d;
+  --border-default: #30363d;
+  --text-primary: #e6edf3;
+  --text-secondary: #8b949e;
+  --text-muted: #6e7681;
+  --accent: #58a6ff;
+  --accent-hover: #79b8ff;
+  --sev-high: #ff6363;
+  --sev-medium: #D29922;
+  --sev-low: #3FB950;
+  --diff-add-bg: #1e3a29;
+  --diff-add-fg: #7ee787;
+  --diff-del-bg: #490192;
+  --diff-del-fg: #ffa198;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html,
+body {
+  height: 100%;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-family: "Inter", ui-sans-serif, system-ui, -apple-system, "SF Pro Text",
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-feature-settings: "cv11", "ss01";
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Tabular numerals everywhere data, never type */
+.tabnum {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Scrollbars: canon GitHub dark */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #30363d transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: #30363d;
+  border-radius: 4px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: #484f58;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Focus ring: one indigo ring, 2px, offset 1px */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+::selection {
+  background: #1f6feb;
+  color: #fff;
+}
+
+/* Caret stays visible on every input */
+input, textarea, [contenteditable] {
+  caret-color: var(--accent);
+}
+
+/* One authored motion: streaming card faded in with stagger */
+@keyframes issCardIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.iss-card-in {
+  animation: issCardIn 240ms cubic-bezier(0.2, 0, 0, 1) both;
+}
+
+@keyframes flashSevBg {
+  0% { background-color: transparent; }
+  20% { background-color: var(--flash-bg); }
+  100% { background-color: transparent; }
+}
+.flash-sev {
+  animation: flashSevBg 900ms cubic-bezier(0.2, 0, 0, 1) 1;
+}
+
+@keyframes cardSevPulse {
+  0% { box-shadow: 0 0 0 0 transparent; }
+  25% { box-shadow: 0 0 0 3px var(--flash-bg); }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+.card-sev-pulse {
+  animation: cardSevPulse 600ms cubic-bezier(0.2, 0, 0, 1) 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .iss-card-in, .flash-sev, .card-sev-pulse {
+    animation: none !important;
+  }
+}
+
+
+/* Responsive: collapse Issue Cards below diff on narrow screens */
+@media (max-width: 900px) {
+  .code-review-workspace {
+    flex-direction: column !important;
+  }
+  .code-review-workspace > .diff-area {
+    min-height: 50vh !important;
+  }
+  .code-review-workspace > .issue-cards {
+    width: 100% !important;
+    border-left: none !important;
+    border-top: 1px solid var(--border-default) !important;
+  }
+}
+
+@media (max-width: 600px) {
+  .code-review-rail {
+    display: none !important;
+  }
+  .code-review-main {
+    width: 100% !important;
+  }
 }
