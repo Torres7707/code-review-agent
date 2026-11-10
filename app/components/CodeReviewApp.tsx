@@ -28,6 +28,7 @@ export function CodeReviewApp() {
     files: FileDiff[];
   }>({ key: null, files: [] });
   const [reviewedPrId, setReviewedPrId] = useState<string | null>(null);
+  const [reviewedPrKey, setReviewedPrKey] = useState<string | null>(null);
 
   const activeRepo = useMemo(
     () => repos.find((r) => r.id === activeRepoId) ?? null,
@@ -42,7 +43,10 @@ export function CodeReviewApp() {
     activeRepo && activePr
       ? `${activeRepo.owner}/${activeRepo.name}#${activePr.number}`
       : null;
-  const fileDiffs = prKey !== null && fileDiffsByKey.key === prKey ? fileDiffsByKey.files : [];
+  const fileDiffs = useMemo(
+    () => (prKey !== null && fileDiffsByKey.key === prKey ? fileDiffsByKey.files : []),
+    [prKey, fileDiffsByKey],
+  );
   const diffsLoading = prKey !== null && fileDiffsByKey.key !== prKey;
 
   const {
@@ -51,7 +55,7 @@ export function CodeReviewApp() {
     isLoading: reviewLoading,
     error: reviewError,
     stop,
-  } = useReview(reviewedPrId, fileDiffs);
+  } = useReview(reviewedPrId, fileDiffs, reviewedPrKey);
 
   // The raw diff has no issue ids; stamp them on so both directions of the
   // highlight can find the same line.
@@ -162,14 +166,23 @@ export function CodeReviewApp() {
   const onPickRepo = useCallback((id: string) => {
     setActiveRepoId(id);
     setActivePrId(null);
+    setReviewedPrId(null);
+    setReviewedPrKey(null);
     setActiveIssueId(null);
   }, []);
 
-  const onPickPR = useCallback((target: PR) => {
-    setActivePrId(target.id);
-    setReviewedPrId(target.id);
-    setActiveIssueId(null);
-  }, []);
+  // Key by repo as well as number: `pr-1` exists in many repos.
+  const onPickPR = useCallback(
+    (target: PR) => {
+      const repo = repos.find((r) => r.id === activeRepoId);
+      const namespace = repo ? `${repo.owner}/${repo.name}` : "";
+      setActivePrId(target.id);
+      setReviewedPrId(target.id);
+      setReviewedPrKey(`${namespace}#${target.number}`);
+      setActiveIssueId(null);
+    },
+    [repos, activeRepoId],
+  );
 
   const signOut = useCallback(() => {
     fetch("/api/auth/signout", { method: "POST" }).then(() => {
