@@ -1,6 +1,8 @@
 "use client";
 
 import type { PR, Repo } from "@/lib/types";
+import { RepoQuickPicker } from "@/app/components/RepoQuickPicker";
+import { usePullCount } from "@/lib/use-pull-count";
 
 function RepoRow({
   repo,
@@ -115,6 +117,8 @@ export function RepoRail({
   onPickRepo: (id: string) => void;
   onPickPR: (pr: PR) => void;
 }) {
+  const activeRepo = repos.find((r) => r.id === activeRepoId) ?? null;
+
   return (
     <nav
       aria-label="Repos and PRs"
@@ -125,6 +129,14 @@ export function RepoRail({
           Repos
         </span>
       </div>
+      <RepoQuickPicker
+        repos={repos}
+        activeRepoId={activeRepoId}
+        onPickRepo={onPickRepo}
+      />
+      {activeRepo ? (
+        <PullCountRow owner={activeRepo.owner} repo={activeRepo.name} />
+      ) : null}
       <div className="min-h-0 flex-1 overflow-y-auto pb-4" role="listbox" aria-label="Your repositories">
         {repos.length === 0 ? (
           <p className="px-4 py-3 text-[11px] leading-relaxed text-[var(--text-muted)]">
@@ -154,5 +166,17 @@ export function RepoRail({
         ))}
       </div>
     </nav>
+  );
+}
+
+function PullCountRow({ owner, repo }: { owner: string; repo: string }) {
+  const { count, loading } = usePullCount(owner, repo);
+
+  return (
+    <div className="flex items-center gap-2 px-4 pb-2 text-[11px] text-[var(--text-muted)]">
+      <span className="h-1 w-1 rounded-full bg-current" aria-hidden="true" />
+      <span className="tabnum">{loading ? "…" : count}</span>
+      <span>open</span>
+    </div>
   );
 }
