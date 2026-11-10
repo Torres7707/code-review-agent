@@ -11,8 +11,8 @@ export function AuthGate({ onSignIn }: { onSignIn: () => void }) {
           </h1>
         </div>
         <p className="max-w-[440px] text-[13px] leading-relaxed text-[var(--text-secondary)]">
-          Sign in with GitHub, pick a PR, and let the agent review your
-          changes before merge. This is a prototype — OAuth is mocked.
+          Sign in with GitHub, pick one of your repos and a pull request, and let
+          the agent review the diff before you merge.
         </p>
       </div>
 
@@ -34,7 +34,7 @@ export function AuthGate({ onSignIn }: { onSignIn: () => void }) {
       </button>
 
       <p className="text-[11px] text-[var(--text-muted)]">
-        Demo · single user · no data is stored
+        Reads your repos and open PRs · no code is stored · sign out any time
       </p>
     </div>
   );

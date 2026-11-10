@@ -126,6 +126,11 @@ export function RepoRail({
         </span>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto pb-4" role="listbox" aria-label="Your repositories">
+        {repos.length === 0 ? (
+          <p className="px-4 py-3 text-[11px] leading-relaxed text-[var(--text-muted)]">
+            No repositories yet. Push a repo on GitHub and it will show up here.
+          </p>
+        ) : null}
         {repos.map((r) => (
           <div key={r.id} role="option" aria-selected={activeRepoId === r.id}>
             <RepoRow

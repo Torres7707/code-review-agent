@@ -1,48 +1,194 @@
-# React Code Review Agent（starter）
+# Code Review Agent
 
-一个最简单的 **React 代码审查 Agent**：粘贴 React 代码 → 点 Review → AI 的审查结果流式显示在下方。
+A single-user, local-first PR reviewer. Sign in with GitHub, pick one of your repos,
+pick an open pull request, and the agent streams back **Issue Cards** — severity-graded
+(High / Medium / Low) findings with the line they sit on, why it's a problem, and a suggested
+fix.
 
-> 这是 **脚手架（starter）**，核心逻辑留空（`TODO(you)`），由你自己从空白写起、调试、讲清楚。
-> 对应 90 天计划的 **Week 2**：https://plan-tracker-eta.vercel.app/weeks/2
+The point is not to replace Copilot code review. It's a personal workspace tool: it runs
+from `next dev` on your machine, talks to GitHub with *your* token, stores nothing, and lets
+you skim a diff before merging instead of reading a wall of markdown.
 
-技术栈：Next.js（App Router, TS strict）· AI SDK v7（`ai@7` + `@ai-sdk/react@4`）· Vercel AI Gateway · Tailwind
+---
 
-## 你自己要做的 4 步
+## What it looks like
 
-| # | 做什么 | 文件 |
-|---|--------|------|
-| 1 | 写/改系统提示词（只报真实问题、按严重度排序、每条给原因+修复、没问题就说 "No problems found"） | `lib/prompt.ts` |
-| 2 | 实现流式 API：读 body → `streamText({ model, instructions, messages: await convertToModelMessages(messages), abortSignal: req.signal })` → `result.toUIMessageStreamResponse()` | `app/api/review/route.ts` |
-| 3 | 页面接上 `useChat`（`@ai-sdk/react`）+ `DefaultChatTransport({ api: "/api/review" })`，点 Review 调 `sendMessage({ text })` | `app/page.tsx` |
-| 4 | 渲染 `messages` 的 `parts`（`type === "text"`），自测 + 能讲清楚数据怎么流 | `app/page.tsx` |
+A three-panel console on a dark GitHub-ish surface:
 
-暂时不做：Stop 按钮、错误处理、结构化输出、tools（Week 2–4 再加）。
-
-## 运行
-
-```bash
-nvm use            # Node 24（.nvmrc）
-npm i
-cp .env.example .env.local   # 填 AI_GATEWAY_API_KEY
-npm run dev        # http://localhost:3000
+```
+┌───────────────────────────────────────────────────────────────┐
+│  ● Code Review Agent · pr-review            torreswang  [Sign out] │
+├────────────────────┬──────────────────────────┬───────────────┤
+│  REPOS             │  #4821 Fix auth race     │  AI Review    │
+│  › next.js    TS   │  fix/auth-race  +1204 -890│  High 2       │
+│    + 4 open PRs    │  @@ -20,7 +22,9 @@        │  Med 1        │
+│  › ai         TS   │   22  const [a, setA] = … │  Low 3        │
+│  › swr        TS   │──────────────────────────│  ──────────   │
+│  › turbo      RS   │  … diff …                │  ▍ High       │
+│                    │                          │  Stale closure…│
+│                    │                          │  View fix ▾   │
+└────────────────────┴──────────────────────────┴───────────────┘
 ```
 
-## 做完你应该看到
+The signature interaction is **bidirectional line ↔ card highlighting**: click a line in
+the diff and its Issue Card pulses; click a card and the diff scrolls to the line, which
+flashes in the severity color.
 
-- 粘贴一段有 bug 的组件（例如 `useEffect` 缺依赖、列表没 `key`）→ 点 Review → 结果**一个字一个字地**流出来，按 🔴/🟡/🟢 排序，每条有 Why + Fix。
-- 粘贴干净的代码 → 只回 "No problems found ✅"。
-- 现在（未实现前）`POST /api/review` 返回 `501 {"error":"not implemented yet"}`。
+---
 
-## 常见坑
+## Stack
 
-- **Node 20 会悄悄装成 ai v6**（v7 需要 Node ≥ 22）。先 `nvm use`，装完用 `npm ls ai @ai-sdk/react` 确认是 7.x / 4.x。
-- v7 里 `system` 改名为 **`instructions`**；`stepCountIs` → `isStepCount`；`convertToModelMessages` 要 `await`。
-- API key **只在服务端**用，不要加 `NEXT_PUBLIC_` 前缀。
-- **永远不要提交 `.env.local`**（`.gitignore` 已排除 `.env*`，只保留 `.env.example`）。
+| | |
+|---|---|
+| Framework | Next.js 16 (App Router, Turbopack, Cache Components) |
+| UI | React 19.3 + Tailwind v4 |
+| Model | `ai@7` AI SDK + `@ai-sdk/react@4`, Vercel AI Gateway |
+| Auth | GitHub OAuth App (stateless, HMAC-signed cookie) |
+| Tests | Vitest 5 |
+| Runtime | Node 24 (`.nvmrc`), pnpm |
 
-## 链接
+No database. No session store. No code is persisted anywhere.
 
-- AI SDK 7 迁移指南：https://ai-sdk.dev/docs/migration-guides/migration-guide-7-0
-- Chatbot（useChat）文档：https://ai-sdk.dev/docs/ai-sdk-ui/chatbot
-- Vercel Academy · AI SDK：https://vercel.com/academy/ai-sdk
-- Vercel AI Gateway：https://vercel.com/docs/ai-gateway
+---
+
+## Setup
+
+```bash
+fnm use            # Node 24 per .nvmrc
+pnpm install
+cp .env.example .env.local
+```
+
+Fill in `.env.local`:
+
+```dotenv
+# --- model -----------------------------------------------------------------
+AI_GATEWAY_API_KEY=     # https://vercel.com/docs/ai-gateway
+AI_MODEL=openai/gpt-5-mini
+
+# --- GitHub OAuth App ------------------------------------------------------
+# https://github.com/settings/developers → New OAuth App
+#   Homepage URL:               http://localhost:3000
+#   Authorization callback URL: http://localhost:3000/api/auth/callback
+GITHUB_CLIENT_ID=
+GITHUB_CLIENT_SECRET=
+
+# Optional: separate HMAC key for the session cookie (falls back to the client secret)
+SESSION_SECRET=
+```
+
+Then:
+
+```bash
+pnpm dev           # http://localhost:3000
+```
+
+---
+
+## The app in 60 seconds
+
+1. **Sign in** → redirects to GitHub's authorize page (`repo`, `read:user`), back to
+   `/api/auth/callback`. The access token is stored **only** in an `HttpOnly` cookie, signed
+   with HMAC-SHA256; the `state` parameter is checked against a short-lived cookie.
+2. **Pick a repo** → the left rail lists your most recently pushed repositories.
+3. **Pick a PR** → open PRs on that repo, with author and timestamps, load into the rail.
+4. **The diff loads** → GitHub's per-file `patch` is parsed into numbered add / del / context
+   lines in the centre panel.
+5. **The review streams** → `POST /api/review` fetches the PR files server-side with your
+   token, hands the hunks to the model with a structured-output schema, and the Issue
+   Cards appear as the JSON streams in — no wait for the full response.
+6. **Issues re-anchor** → each issue's reported line is mapped onto lines actually rendered
+   in the diff; lines elided by the diff viewer snap to the nearest visible line in the
+   same file, and issues pointing at a file that isn't in the PR lose their anchor rather
+   than lighting up the wrong line.
+
+---
+
+## Architecture
+
+```
+app/
+  api/
+    auth/github/route.ts      GET  → redirect to GitHub authorize (+ state cookie)
+    auth/callback/route.ts    GET  ← code; verify state, exchange for token,
+                                   set signed session cookie, redirect to /
+    auth/signout/route.ts     POST → clear session cookie
+    me/route.ts               GET  → { user } or { user: null }
+    repos/route.ts            GET  → the user's repos                 (401 unauth)
+    repos/[owner]/[repo]/prs/route.ts         GET  → open PRs         (401 unauth)
+    repos/[owner]/[repo]/prs/[number]/route.ts GET  → one PR's totals  (401 unauth)
+    repos/[owner]/[repo]/prs/[number]/diff/route.ts GET → parsed diff (401  unauth)
+    review/route.ts           POST → streamed structured review
+  components/
+    CodeReviewApp.tsx         client orchestrator: session → repos → PRs → diff → review
+    Header.tsx  RepoRail.tsx  DiffView.tsx  IssueCards.tsx  AuthGate.tsx
+lib/
+  github-auth.ts              signed session cookie, state cookie, redirect URI
+  github.ts                   typed GitHub REST helper
+  diff.ts                     unified-patch → DiffView line records
+  review-schema.ts            zod schema shared by route and client (useObject)
+  review-prompt.ts            model turn builder (PR header, file hunks, pasted code)
+  review-core.ts              pure: line anchoring, prompt building, review → Issue[]
+  use-review.ts               useObject stream → Issue[] with anchor correction
+  types.ts                    shared domain types
+tests/                        Vitest: diff parser, session signing, review core, route
+```
+
+### The review contract
+
+`lib/review-schema.ts` is the single source of truth:
+
+```ts
+{ summary: string,
+  issues: [{ severity: "high" | "medium" | "low",
+             title, file: string, startLine: number, endLine?: number,
+             why, fix }] }
+```
+
+It is passed to `streamText({ output: Output.object({ schema }) })` on the server and to
+`useObject({ schema })` on the client, so the streamed partial JSON is validated on both
+ends. The system prompt (`lib/prompt.ts`) is written to match this schema — it never asks
+the model for markdown prose, because parsed-object output has no prose channel.
+
+---
+
+## Deploying to Vercel
+
+Nothing in the OAuth code assumes localhost: the callback URL is derived from the
+request's own host.
+
+1. Import the repo into Vercel.
+2. Set `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `SESSION_SECRET`, `AI_GATEWAY_API_KEY`
+   (and optionally `AI_MODEL`) as project environment variables.
+3. In the **same** GitHub OAuth App you use locally, add a second
+   **Authorization callback URL**:
+   `https://<your-app>.vercel.app/api/auth/callback`
+
+   GitHub accepts multiple callback URLs per OAuth App, so local dev keeps working
+   unchanged.
+4. Deploy. The session cookie is marked `Secure` automatically when
+   `NODE_ENV=production`.
+
+---
+
+## Scripts
+
+```bash
+pnpm dev            # next dev on :3000
+pnpm build          # production build
+pnpm start          # serve the build
+pnpm lint           # eslint
+pnpm typecheck      # tsc --noEmit
+pnpm test           # vitest run
+pnpm test:watch     # vitest in watch mode
+```
+
+## Notes and limits
+
+- GitHub's `files` API omits a `patch` for binary files and for diffs above its size
+  limit; those files are skipped in the diff view rather than shown truncated.
+- Large PRs are capped at 12 files and 8k characters of patch per file before going to
+  the model (`lib/review-core.ts`), purely to bound request cost.
+- The review is anchored line-by-line, not to postable GitHub review comments yet —
+  everything stays local to the UI.
+- `app/prototype-ui/` holds earlier layout variants and is not part of the shipped app.

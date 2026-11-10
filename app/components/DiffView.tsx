@@ -131,17 +131,30 @@ export function DiffView({
   files,
   activeIssueId,
   onLineClick,
+  loading = false,
+  emptyMessage = "Pick a PR from the left rail to see its diff.",
 }: {
   files: FileDiff[];
   activeIssueId: string | null;
   onLineClick: (issueId: string, lineNo: number) => void;
+  loading?: boolean;
+  emptyMessage?: string;
 }) {
+  if (loading) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-2 bg-[var(--bg-base)] px-8 text-center">
+        <div className="border-2 border-dashed border-[var(--border-default)] rounded-lg px-8 py-6">
+          <p className="text-[13px] text-[var(--text-secondary)]">Loading diff…</p>
+        </div>
+      </div>
+    );
+  }
   if (files.length === 0) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 bg-[var(--bg-base)] px-8 text-center">
         <div className="border-2 border-dashed border-[var(--border-default)] rounded-lg px-8 py-6">
           <p className="text-[13px] text-[var(--text-secondary)]">
-            Pick a PR from the left rail to see its diff.
+            {emptyMessage}
           </p>
         </div>
       </div>

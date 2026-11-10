@@ -1,5 +1,7 @@
 "use client";
 
+import Image from "next/image";
+
 export function Header({
   user,
   onSignOut,
@@ -25,9 +27,14 @@ export function Header({
             <span className="font-mono text-[12px] text-[var(--text-secondary)]">
               {user.login}
             </span>
-            <div className="h-6 w-6 overflow-hidden rounded-full border border-[var(--border-default)]">
-              <img src={user.avatar} alt="" className="h-full w-full object-cover" />
-            </div>
+            <Image
+              src={user.avatar}
+              alt=""
+              width={24}
+              height={24}
+              className="h-6 w-6 rounded-full border border-[var(--border-default)] object-cover"
+              unoptimized
+            />
             <button
               type="button"
               onClick={onSignOut}

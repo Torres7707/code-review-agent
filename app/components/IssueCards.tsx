@@ -116,19 +116,21 @@ export function IssueCards({
   streamedIds,
   activeId,
   isStreaming,
+  errorMessage,
   onPick,
 }: {
   issues: Issue[];
   streamedIds: string[];
   activeId: string | null;
   isStreaming: boolean;
+  errorMessage?: string;
   onPick: (id: string) => void;
 }) {
-  if (issues.length === 0) return null;
-
   const high = issues.filter((i) => i.severity === "high" && streamedIds.includes(i.id)).length;
   const med = issues.filter((i) => i.severity === "medium" && streamedIds.includes(i.id)).length;
   const low = issues.filter((i) => i.severity === "low" && streamedIds.includes(i.id)).length;
+  const status = errorMessage ? "error" : isStreaming ? "streaming" : "done";
+  const isEmpty = !isStreaming && !errorMessage && issues.length === 0;
 
   return (
     <aside
@@ -139,8 +141,10 @@ export function IssueCards({
         <h3 className="text-[12px] font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)]">
           AI Review
         </h3>
-        <span className="font-mono text-[11px] text-[var(--text-muted)]">
-          {isStreaming ? "streaming" : "done"}
+        <span
+          className={`font-mono text-[11px] ${errorMessage ? "text-[var(--sev-high)]" : "text-[var(--text-muted)]"}`}
+        >
+          {status}
         </span>
       </div>
       <div className="flex items-center gap-4 border-b border-[var(--border-default)] px-4 py-2">
@@ -161,6 +165,14 @@ export function IssueCards({
               wasNew={true}
             />
           ))}
+        {errorMessage ? (
+          <p className="rounded-md border border-[var(--sev-high)]/40 bg-[var(--sev-high)]/10 p-3 text-[12px] text-[var(--sev-high)]">
+            {errorMessage}
+          </p>
+        ) : null}
+        {isEmpty ? (
+          <p className="p-3 text-[12px] text-[var(--text-muted)]">No problems found.</p>
+        ) : null}
       </div>
     </aside>
   );

@@ -75,7 +75,7 @@ export async function readSession(req: Request): Promise<string | null> {
   const payload = value.slice(0, sep);
   const mac = value.slice(sep + 1);
   const token = Buffer.from(payload, "base64url").toString();
-  if (!timingSafeEqual(mac, await hmacHex(token))) return null;
+  if (!token || !mac || !timingSafeEqual(mac, await hmacHex(token))) return null;
   return token;
 }
 
