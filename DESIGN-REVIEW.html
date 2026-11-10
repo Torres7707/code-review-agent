@@ -1,0 +1,1136 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Code Review Agent - 设计评审与实现记录</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+        .badge { @apply inline-block px-2 py-0.5 rounded-full text-xs font-medium; }
+        .badge-green { @apply bg-green-100 text-green-800; }
+        .badge-yellow { @apply bg-yellow-100 text-yellow-800; }
+        .badge-red { @apply bg-red-100 text-red-800; }
+        .badge-blue { @apply bg-blue-100 text-blue-800; }
+        .badge-purple { @apply bg-purple-100 text-purple-800; }
+        .badge-gray { @apply bg-gray-100 text-gray-700; }
+        .card { @apply bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6; }
+        .card-dark { @apply bg-gray-900 text-gray-100 rounded-xl shadow-sm border border-gray-700 p-6 mb-6; }
+        .prose-custom p { @apply my-4 leading-relaxed text-gray-700; }
+        .prose-custom li { @apply pl-2; }
+        .prose-custom code { @apply bg-gray-100 text-pink-600 px-2 py-0.5 rounded text-sm font-mono; }
+        .prose-custom pre { @apply bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto my-4 text-sm; }
+        .prose-custom pre code { @apply bg-transparent text-gray-100 p-0; }
+        .mockup-card { @apply bg-gray-900 text-gray-100 rounded-lg shadow-xl overflow-hidden border border-gray-700; }
+        .mockup-header { @apply bg-gray-800 px-4 py-2 border-b border-gray-700 flex items-center gap-2; }
+        .mockup-dot { @apply w-3 h-3 rounded-full; }
+        .issue-card { @apply bg-white rounded-lg border-l-4 p-4 mb-3; }
+        .step-number { @apply inline-flex items-center justify-center w-8 h-8 bg-blue-100 text-blue-700 rounded-full font-bold text-sm; }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/lucide@latest"></script>
+</head>
+<body class="bg-gradient-to-br from-slate-50 to-slate-100 min-h-screen">
+    <div class="max-w-5xl mx-auto px-4 py-12">
+        <!-- Header -->
+        <header class="mb-12 text-center">
+            <div class="inline-flex items-center justify-center w-16 h-16 bg-gradient-to-br from-blue-600 to-purple-600 rounded-2xl mb-4 shadow-lg">
+                <svg class="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
+                </svg>
+            </div>
+            <h1 class="text-4xl font-bold text-gray-900 mb-2">Code Review Agent</h1>
+            <p class="text-xl text-gray-600">设计评审与实现记录 · GitHub集成 · Issue Cards可视化</p>
+            <div class="flex items-center justify-center gap-4 mt-6 text-sm text-gray-500">
+                <span class="badge badge-green">个人作品</span>
+                <span class="badge badge-blue">GitHub OAuth</span>
+                <span class="badge badge-purple">单用户</span>
+                <span class="badge badge-gray">已实现 v1.0</span>
+                <span>2026-11-10 更新</span>
+            </div>
+        </header>
+
+        <!-- 执行摘要 -->
+        <div class="card bg-gradient-to-r from-blue-50 to-purple-50 border-0">
+            <h2 class="text-2xl font-bold text-gray-900 mb-4">📋 执行摘要</h2>
+            <p class="text-gray-800 leading-relaxed">
+                本项目从"粘贴代码"的原型演进为<strong>GitHub集成的自动化审查平台</strong>：
+                用户通过 GitHub OAuth 登录 → 自动拉取自己的仓库列表 → 点击某个 PR → AI自动审查 → 结构化展示问题。
+            </p>
+            <div class="grid grid-cols-3 gap-4 mt-6">
+                <div class="bg-white rounded-lg p-4 text-center">
+                    <div class="text-4xl font-bold text-blue-600">1</div>
+                    <div class="text-sm text-gray-600 mt-1">登录</div>
+                </div>
+                <div class="bg-white rounded-lg p-4 text-center">
+                    <div class="text-4xl font-bold text-purple-600">5</div>
+                    <div class="text-sm text-gray-600 mt-1">步工作流</div>
+                </div>
+                <div class="bg-white rounded-lg p-4 text-center">
+                    <div class="text-4xl font-bold text-green-600">0</div>
+                    <div class="text-sm text-gray-600 mt-1">外部依赖</div>
+                </div>
+            </div>
+            <p class="text-sm text-gray-600 mt-4">
+                <strong>核心变化：</strong>从"手动粘贴"到"点 PR 自动 Review"，从"Markdown 流"到"结构化 Issue Cards"。
+            </p>
+        </div>
+
+        <!-- 实现状态 -->
+        <div class="card border-l-4 border-green-500">
+            <h2 class="text-2xl font-bold text-gray-900 mb-2">📌 实现状态（2026-11-10）</h2>
+            <p class="text-sm text-gray-600 mb-5">
+                本文档最初写于实施前。下面标注哪些已经落地、哪些和设想不同、哪些还没做，
+                阅读后面章节时请对照此表。
+            </p>
+
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm text-left border-collapse">
+                    <thead>
+                        <tr class="border-b border-gray-300 text-gray-500">
+                            <th class="py-2 pr-3">设计项</th>
+                            <th class="py-2 pr-3">状态</th>
+                            <th class="py-2">实际情况</th>
+                        </tr>
+                    </thead>
+                    <tbody class="text-gray-700 align-top">
+                        <tr class="border-b border-gray-200">
+                            <td class="py-2 pr-3">GitHub OAuth 登录</td>
+                            <td class="py-2 pr-3"><span class="badge badge-green">已实现</span></td>
+                            <td class="py-2">用 <strong>OAuth App 授权码流</strong>，不是 Device Flow：<code>/api/auth/github</code> → GitHub → <code>/api/auth/callback</code>。单人本地/部署两种场景都更省事，且能直接复用一个回调白名单。</td>
+                        </tr>
+                        <tr class="border-b border-gray-200">
+                            <td class="py-2 pr-3">Token 加密存储</td>
+                            <td class="py-2 pr-3"><span class="badge badge-purple">已换方案</span></td>
+                            <td class="py-2">没有用 jose/JWE。token 放进 <strong>HMAC-SHA256 签名的 HttpOnly cookie</strong>（<code>lib/github-auth.ts</code>），验签失败即视为未登录。单用户工具不引入额外加密依赖，签名足以防篡改；生产环境自动加 <code>Secure</code>。</td>
+                        </tr>
+                        <tr class="border-b border-gray-200">
+                            <td class="py-2 pr-3">CSRF 防护</td>
+                            <td class="py-2 pr-3"><span class="badge badge-green">已实现</span></td>
+                            <td class="py-2">OAuth <code>state</code> 随机值写入短生命周期 cookie（10 分钟），回调时比对，不匹配不进会话。</td>
+                        </tr>
+                        <tr class="border-b border-gray-200">
+                            <td class="py-2 pr-3">仓库 / PR / Diff 接口</td>
+                            <td class="py-2 pr-3"><span class="badge badge-green">已实现</span></td>
+                            <td class="py-2 pr-3">四个 route handler：<code>/api/repos</code>、<code>.../prs</code>、<code>.../prs/[number]</code>、<code>.../prs/[number]/diff</code>。未登录一律 401。</td>
+                        </tr>
+                        <tr class="border-b border-gray-200">
+                            <td class="py-2 pr-3">结构化 Issue Cards</td>
+                            <td class="py-2 pr-3"><span class="badge badge-green">已实现</span></td>
+                            <td class="py-2"><code>lib/review-schema.ts</code> 的 zod schema 由服务端 <code>Output.object</code> 和客户端 <code>useObject</code> 共用，边流边渲染。旧 prompt 里的 🔴/🟡/🟢 markdown 已删除——结构化输出没有 markdown 通道。</td>
+                        </tr>
+                        <tr class="border-b border-gray-200">
+                            <td class="py-2 pr-3">行号 ↔ 卡片双向高亮</td>
+                            <td class="py-2 pr-3"><span class="badge badge-green">已实现</span></td>
+                            <td class="py-2">模型报的行号会锚定到 diff 实际渲染的行：被省略的行吸附到同文件最近可见行；不属于本 PR 的文件直接丢弃锚点，避免照错行。</td>
+                        </tr>
+                        <tr class="border-b border-gray-200">
+                            <td class="py-2 pr-3">存 localStorage</td>
+                            <td class="py-2 pr-3"><span class="badge badge-red">未做</span></td>
+                            <td class="py-2">当前不落盘。刷新即重新请求。留作历史记录功能的入口。</td>
+                        </tr>
+                        <tr class="border-b border-gray-200">
+                            <td class="py-2 pr-3">多页面路由（<code>/projects</code>、<code>/review</code>）</td>
+                            <td class="py-2 pr-3"><span class="badge badge-yellow">未采用</span></td>
+                            <td class="py-2">最终是三栏单页（左 rail / 中 diff / 右 cards），选仓库、选 PR 都在同一路由内完成。下文第 11 节的多页面结构是实现前的设想，仅作历史参考。</td>
+                        </tr>
+                        <tr>
+                            <td class="py-2 pr-3">自动化测试</td>
+                            <td class="py-2 pr-3"><span class="badge badge-green">已补充</span></td>
+                            <td class="py-2">Vitest 42 个用例：patch 解析、cookie 签名与篡改、锚定逻辑、prompt 构建、<code>/api/review</code> 流式路由（mock 模型驱动）。</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- 项目概述 -->
+        <section class="mt-12">
+            <h2 class="text-3xl font-bold text-gray-900 mb-8 flex items-center gap-3">
+                <span class="step-number">1</span> 项目定位与范围
+            </h2>
+
+            <div class="grid grid-cols-2 gap-4 mb-6">
+                <div class="card border-l-4 border-green-500">
+                    <h3 class="text-lg font-bold text-gray-900 mb-2">✅ 项目目的</h3>
+                    <p class="text-gray-700 text-sm">
+                        个人作品：自动化扫描 GitHub PR 中的 React 代码问题，
+                        让开发者在合并代码前快速发现 bug、hook 误用、性能和安全缺陷。
+                    </p>
+                </div>
+                <div class="card border-l-4 border-blue-500">
+                    <h3 class="text-lg font-bold text-gray-900 mb-2">👤 目标用户</h3>
+                    <p class="text-gray-700 text-sm">
+                        个人使用（当前阶段）：单用户登录，保存在本地浏览器，不涉及数据库和多用户隔离。
+                    </p>
+                </div>
+            </div>
+
+            <div class="card bg-gray-50">
+                <h3 class="text-lg font-bold text-gray-900 mb-4">🎯 3 个核心价值</h3>
+                <ol class="list-decimal list-inside text-gray-700 space-y-2">
+                    <li><strong>零摩擦</strong>：不用复制代码，点 PR 就行</li>
+                    <li><strong>结构化</strong>：不是给你一段 markdown，而是带严重度和修复建议的 Issue Cards</li>
+                    <li><strong>流式响应</strong>：结论逐字出现，不用等，感知速度快</li>
+                </ol>
+            </div>
+
+            <div class="card bg-yellow-50 border-yellow-200 mt-4">
+                <h3 class="text-lg font-bold text-yellow-800 mb-3">🚫 明确不做（当前阶段）</h3>
+                <ul class="list-disc list-inside text-gray-700 space-y-1 text-sm">
+                    <li>不做多用户系统、不做数据库、不做权限隔离</li>
+                    <li>不做 Bot 评论回 PR（开 GitHub App 才需要）</li>
+                    <li>不主动监听 Webhook 触发自动审查（需托管后台，Phase 3 再说）</li>
+                    <li>不做 CRUD 历史记录（localStorage 可支持，稍后再加）</li>
+                </ul>
+            </div>
+        </section>
+
+        <!-- 完整工作流 -->
+        <section class="mt-12">
+            <h2 class="text-3xl font-bold text-gray-900 mb-8 flex items-center gap-3">
+                <span class="step-number">2</span> 完整用户工作流
+            </h2>
+
+            <div class="grid grid-cols-1 md:grid-cols-5 gap-3">
+                <!-- Step 1 -->
+                <div class="bg-white rounded-xl shadow-sm border p-5 text-center">
+                    <div class="w-12 h-12 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center mx-auto font-bold text-xl mb-3">1</div>
+                    <p class="font-semibold text-gray-900 mb-1">GitHub授权</p>
+                    <p class="text-xs text-gray-600">点按钮跳转 GitHub 完成 OAuth 授权</p>
+                </div>
+                <!-- Step 2 -->
+                <div class="bg-white rounded-xl shadow-sm border p-5 text-center">
+                    <div class="w-12 h-12 bg-purple-100 text-purple-600 rounded-full flex items-center justify-center mx-auto font-bold text-xl mb-3">2</div>
+                    <p class="font-semibold text-gray-900 mb-1">选择仓库</p>
+                    <p class="text-xs text-gray-600">展示个人所有仓库，可搜索</p>
+                </div>
+                <!-- Step 3 -->
+                <div class="bg-white rounded-xl shadow-sm border p-5 text-center">
+                    <div class="w-12 h-12 bg-pink-100 text-pink-600 rounded-full flex items-center justify-center mx-auto font-bold text-xl mb-3">3</div>
+                    <p class="font-semibold text-gray-900 mb-1">列出 PR</p>
+                    <p class="text-xs text-gray-600">展示该仓库的 open PRs</p>
+                </div>
+                <!-- Step 4 -->
+                <div class="bg-white rounded-xl shadow-sm border p-5 text-center">
+                    <div class="w-12 h-12 bg-red-100 text-red-600 rounded-full flex items-center justify-center mx-auto font-bold text-xl mb-3">4</div>
+                    <p class="font-semibold text-gray-900 mb-1">拉取 Diff</p>
+                    <p class="text-xs text-gray-600">后端通过 GitHub API 抓 diff</p>
+                </div>
+                <!-- Step 5 -->
+                <div class="bg-white rounded-xl shadow-sm border-2 border-green-500 p-5 text-center">
+                    <div class="w-12 h-12 bg-green-100 text-green-600 rounded-full flex items-center justify-center mx-auto font-bold text-xl mb-3">5</div>
+                    <p class="font-semibold text-gray-900 mb-1">AI 审查</p>
+                    <p class="text-xs text-gray-600">流式输出 Issue Cards</p>
+                </div>
+            </div>
+
+            <div class="card mt-6">
+                <h3 class="text-lg font-bold text-gray-900 mb-4">🔄 整体流程图</h3>
+                <pre class="bg-gray-900 text-gray-100 p-4 rounded-lg text-sm font-mono overflow-x-auto"><code>用户点击 "使用 GitHub 登录"
+    ↓
+GitHub 授权页 (OAuth App)
+    ↓
+回调到 /auth/callback → 存 token 到 Cookie (加密)
+    ↓
+GET /api/repos → GitHub API 拉取用户所有仓库
+    ↓
+用户选择项目 → 进入 /projects/:name
+    ↓
+GET /api/prs?repo=xxx → 拉取 open PRs
+    ↓
+用户点击某个 PR → 进入 /review/:repo/:pr
+    ↓
+后端调 GitHub API 拉 PR diff
+      + streamText() 流式审查
+    ↓
+前端渲染为 Issue Cards ← 结构化展示
+    ↓
+结果自动存 localStorage，可回头查看</code></pre>
+            </div>
+        </section>
+
+        <!-- 系统架构 -->
+        <section class="mt-12">
+            <h2 class="text-3xl font-bold text-gray-900 mb-8 flex items-center gap-3">
+                <span class="step-number">3</span> 系统架构
+            </h2>
+
+            <div class="card-dark">
+                <h3 class="text-xl font-bold mb-4 text-white">🏗️ 架构图（单用户版）</h3>
+                <pre class="bg-gray-950 text-gray-200 p-4 rounded-lg text-sm font-mono overflow-x-auto"><code>┌────────────────────────────────────────────────────────────────┐
+│                     Browser (Tailwind + React)                  │
+│  ┌──────────────┐  ┌───────────────┐  ┌─────────────────────┐  │
+│  │ 登录按钮      │  │ 仓库列表页    │  │ PR 列表 / Review页   │  │
+│  │ /auth/github │  │ /projects    │  │ /review/:repo/:pr   │  │
+│  └──────────────┘  └───────────────┘  └─────────────────────┘  │
+└────────────────────────────────────────────────────────────────┘
+             │  fetch /api/..., headers: Cookie (HttpOnly)
+             ▼
+┌────────────────────────────────────────────────────────────────┐
+│                  Next.js Route Handlers                        │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌────────────────┐  │
+│  │ /api/auth/       │  │ /api/repos      │  │ /api/review    │  │
+│  │ github/callback  │  │ /api/prs        │  │ POST           │  │
+│  │ (OAuth 交换 token)│  │ (GitHub API)   │  │ (审查阅读 + 生成) │  │
+│  └────────┬────────┘  └────────┬─────────┘  └───────┬────────┘  │
+│           │                      │                    │          │
+│           ▼                      ▼                    ▼          │
+│    ┌─────────────────────────────────────────────────────┐     │
+│    │         加密 Cookie: jose + HttpOnly                   │     │
+│    │        { accessToken: encrypted, expires: ... }         │     │
+│    └─────────────────────────────────────────────────────┘     │
+└────────────────────────────────────────────────────────────────┘
+             ▲
+             │
+    ┌────────┴────────┐
+    │  GitHub  API    │  无数据库，只有加密 Cookie + 内存
+    │  OAuth + REST   │
+    └────────────────┘
+
+  上游继续接 AI SDK v7 streamText → Vercel AI Gateway</code></pre>
+            </div>
+
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mt-6">
+                <div class="card border-l-4 border-gray-400">
+                    <p class="text-xs text-gray-500 uppercase tracking-wider mb-2">认证</p>
+                    <p class="font-semibold text-gray-900">JWT Cookie</p>
+                    <p class="text-xs text-gray-600 mt-1">jose + HttpOnly + Secure</p>
+                </div>
+                <div class="card border-l-4 border-gray-400">
+                    <p class="text-xs text-gray-500 uppercase tracking-wider mb-2">存储</p>
+                    <p class="font-semibold text-gray-900">无数据库</p>
+                    <p class="text-xs text-gray-600 mt-1">加密 Cookie + localStorage</p>
+                </div>
+                <div class="card border-l-4 border-gray-400">
+                    <p class="text-xs text-gray-500 uppercase tracking-wider mb-2">API 上限</p>
+                    <p class="font-semibold text-gray-900">60次/小时</p>
+                    <p class="text-xs text-gray-600 mt-1">GitHub 免费版，够用</p>
+                </div>
+                <div class="card border-l-4 border-gray-400">
+                    <p class="text-xs text-gray-500 uppercase tracking-wider mb-2">后端</p>
+                    <p class="font-semibold text-gray-900">Next.js 16</p>
+                    <p class="text-xs text-gray-600 mt-1">Vercel + Edge / Node</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- 登录与OAuth设计 -->
+        <section class="mt-12">
+            <h2 class="text-3xl font-bold text-gray-900 mb-8 flex items-center gap-3">
+                <span class="step-number">4</span> GitHub OAuth 单用户方案
+            </h2>
+
+            <div class="card">
+                <h3 class="text-lg font-bold text-gray-900 mb-4">🔐 实际方案：OAuth App 授权码流（不是 Device Flow）</h3>
+                <p class="text-gray-700 mb-4">
+                    设计阶段推荐过 Device Flow，实现时改成了标准 OAuth App 授权码流。原因：
+                    个人项目在浏览器里用，没有"无浏览器设备"的场景；Device Flow 多一步
+                    user_code 输入，还要在 OAuth App 里单独留意 device flow 开关，而授权码流
+                    在 localhost 和 Vercel 上都只需要登记一个 callback URL。刷新页面无需重登录。
+                </p>
+                <pre class="bg-gray-100 text-gray-800 p-4 rounded-lg text-sm font-mono overflow-x-auto"><code>// 流程（已实现）
+1. 点 "Sign in with GitHub" → GET /api/auth/github
+2. 生成随机 state，写入 cra_oauth_state cookie（10 分钟，HttpOnly）
+3. 302 跳转 github.com/login/oauth/authorize
+   ?client_id=...&amp;scope=repo read:user&state=...
+4. 用户授权后 GitHub 回调 /api/auth/callback?code=...&state=...
+5. 后端比对 cookie 中的 state 与查询参数，不一致直接拒绝
+6. POST github.com/login/oauth/access_token，用 code 换 access_token
+7. HMAC-SHA256 签名 token → Set-Cookie: cra_session=&lt;base64url&gt;.&lt;mac&gt;
+   HttpOnly; SameSite=Lax; Max-Age=30天（生产环境额外加 Secure）
+8. 无 middleware：需要 token 的 route handler 各自 readSession(req)，
+   验签通过返回 token，失败返回 null（不区分"过期"与"伪造"）</code></pre>
+            </div>
+
+            <div class="card">
+                <h3 class="text-lg font-bold text-gray-900 mb-4">📁 代码结构（已实现）</h3>
+                <pre class="bg-gray-900 text-gray-100 p-4 rounded-lg text-sm font-mono overflow-x-auto"><code>app/api/
+├── auth/github/route.ts        # 生成 state cookie，302 到 GitHub 授权页
+├── auth/callback/route.ts      # 校验 state，换 token，签发会话 cookie
+├── auth/signout/route.ts       # 清除会话 cookie
+├── me/route.ts                 # 当前用户（未登录返回 { user: null }）
+├── repos/route.ts              # 用户仓库列表
+├── repos/[owner]/[repo]/prs/route.ts          # 仓库的 open PRs
+├── repos/[owner]/[repo]/prs/[number]/route.ts  # 单个 PR 的元数据
+├── repos/[owner]/[repo]/prs/[number]/diff/route.ts # 解析好的 diff
+└── review/route.ts              # 结构化流式审查
+
+lib/
+├── github-auth.ts              # 会话签名/验签、state cookie、回调地址推导
+├── github.ts                   # GitHub REST 调用封装
+├── diff.ts                     # unified patch → DiffView 行记录
+├── review-schema.ts            # zod schema（服务端 + 客户端共用）
+├── review-prompt.ts            # prompt 构建入口（转发到 review-core）
+├── review-core.ts              # 纯逻辑：锚定、prompt、review → Issue[]
+├── use-review.ts               # useObject 流 → Issue[]
+└── types.ts                    # 共享类型</code></pre>
+            </div>
+
+            <div class="grid grid-cols-2 gap-4 mt-4">
+                <div class="card bg-green-50 border-green-200">
+                    <h3 class="font-semibold text-gray-900 mb-2">✅ 优点</h3>
+                    <ul class="list-disc list-inside text-sm text-gray-700">
+                        <li>无数据库</li>
+                        <li>token 自动过期由 GitHub 管理</li>
+                        <li>换设备只需重新登录</li>
+                        <li>实现成本低</li>
+                    </ul>
+                </div>
+                <div class="card bg-yellow-50 border-yellow-200">
+                    <h3 class="font-semibold text-gray-900 mb-2">⚠️ 局限</h3>
+                    <ul class="list-disc list-inside text-sm text-gray-700">
+                        <li>不适用于多用户</li>
+                        <li>需要手动重新登录（token过期）</li>
+                        <li>无法接 Webhook</li>
+                        <li>无服务端"用户态"</li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+
+        <!-- GitHub API 调用设计 -->
+        <section class="mt-12">
+            <h2 class="text-3xl font-bold text-gray-900 mb-8 flex items-center gap-3">
+                <span class="step-number">5</span> GitHub REST API 调用设计
+            </h2>
+
+            <div class="card">
+                <h3 class="text-lg font-bold text-gray-900 mb-4">📦 需要调用的接口</h3>
+                <table class="w-full text-sm">
+                    <thead>
+                        <tr class="border-b border-gray-200">
+                            <th class="text-left py-2 pr-4">方法 / 路径</th>
+                            <th class="text-left py-2 pr-4">用途</th>
+                            <th class="text-left py-2">返回内容</th>
+                        </tr>
+                    </thead>
+                    <tbody class="text-gray-700">
+                        <tr class="border-b border-gray-100">
+                            <td class="py-2 pr-4 font-mono text-xs">GET /user</td>
+                            <td class="py-2 pr-4">获取当前登录用户</td>
+                            <td class="py-2">login, avatar, name</td>
+                        </tr>
+                        <tr class="border-b border-gray-100">
+                            <td class="py-2 pr-4 font-mono text-xs">GET /user/repos</td>
+                            <td class="py-2 pr-4">拉取所有仓库</td>
+                            <td class="py-2">[{ name, full_name, stargazers_count }]</td>
+                        </tr>
+                        <tr class="border-b border-gray-100">
+                            <td class="py-2 pr-4 font-mono text-xs">GET /repos/:owner/:repo/pulls</td>
+                            <td class="py-2 pr-4">PR列表（open状态）</td>
+                            <td class="py-2">[{ number, title, user.login, ... }]</td>
+                        </tr>
+                        <tr class="border-b border-gray-100">
+                            <td class="py-2 pr-4 font-mono text-xs">GET /repos/:owner/:repo/pulls/:pr/files</td>
+                            <td class="py-2 pr-4">PR所有变更文件</td>
+                            <td class="py-2">[{ filename, patch, ... }]</td>
+                        </tr>
+                        <tr>
+                            <td class="py-2 pr-4 font-mono text-xs">GET /repos/:owner/:repo/pulls/:pr</td>
+                            <td class="py-2 pr-4">PR 详情 / diff_url</td>
+                            <td class="py-2">{ body, diff_url, ... }</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="card">
+                <h3 class="text-lg font-bold text-gray-900 mb-4">🔧 核心代码示例</h3>
+                <pre class="bg-gray-900 text-gray-100 p-4 rounded-lg text-sm font-mono overflow-x-auto"><code>// lib/github.ts
+export async function fetchRepoFiles(repo: string, pr: number): Promise&lt;File[]&gt; {
+  const token = getAuthToken(); // 从 cookie 解密
+  const res = await fetch(
+    `https://api.github.com/repos/${repo}/pulls/${pr}/files`,
+    {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/vnd.github+json',
+      },
+    }
+  );
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+// 后端拼接 patch 成 diff 文本
+const diffText = files.map(f =&gt; f.patch).join('\n\n---\n\n');
+// 然后传给 streamText() 做流式审查</code></pre>
+            </div>
+
+            <div class="card bg-yellow-50 border-yellow-200">
+                <h3 class="text-lg font-bold text-yellow-800 mb-2">⚠️ GitHub API 限额</h3>
+                <ul class="list-disc list-inside text-sm text-gray-700 space-y-1">
+                    <li>未认证: 60 次/小时（够用，单用户）</li>
+                    <li>认证后: 5000 次/小时（足够）</li>
+                    <li>大 PR（超过 3000 行 / 100+ files）用 files 接口会截断，需要个 cursor 分页</li>
+                    <li>建议加响应时间：GitHub API 通常 100-500ms</li>
+                </ul>
+            </div>
+        </section>
+
+        <!-- Issue Cards 可视化 -->
+        <section class="mt-12">
+            <h2 class="text-3xl font-bold text-gray-900 mb-8 flex items-center gap-3">
+                <span class="step-number">6</span> 最终 UI 与 Issue Cards 可视化
+            </h2>
+
+            <p class="text-gray-700 mb-6">
+                AI 输出不再是原始 markdown，而是<strong>结构化的 Issue Cards</strong>。
+                每个问题是一个独立卡片，左边色条表示严重度，点击展开修复代码。
+            </p>
+
+            <div class="mockup-card max-w-2xl">
+                <div class="mockup-header">
+                    <span class="mockup-dot bg-red-400"></span>
+                    <span class="mockup-dot bg-yellow-400"></span>
+                    <span class="mockup-dot bg-green-400"></span>
+                    <span class="ml-3 text-xs text-gray-400 font-mono">localhost:3000 /review/torreswang/code-review-agent/42</span>
+                </div>
+
+                <div class="bg-gray-950 p-6 max-h-[600px] overflow-y-auto">
+                    <!-- Header -->
+                    <div class="flex items-center justify-between mb-6 pb-4 border-b border-gray-700">
+                        <div>
+                            <h2 class="text-white text-lg font-semibold">#42 Support GitHub OAuth</h2>
+                            <p class="text-gray-400 text-sm mt-1">torreswang opened 4 days ago</p>
+                        </div>
+                        <div class="flex gap-2 text-xs">
+                            <span class="badge bg-blue-900 text-blue-200">3 files changed</span>
+                            <span class="badge bg-gray-800 text-gray-300">+218 -32 lines</span>
+                        </div>
+                    </div>
+
+                    <!-- Stats Bar -->
+                    <div class="flex gap-3 mb-6">
+                        <div class="bg-gray-900 rounded-lg p-3 flex-1">
+                            <div class="text-2xl font-bold text-red-400">1</div>
+                            <div class="text-xs text-gray-500">🔴 High</div>
+                        </div>
+                        <div class="bg-gray-900 rounded-lg p-3 flex-1">
+                            <div class="text-2xl font-bold text-yellow-400">2</div>
+                            <div class="text-xs text-gray-500">🟡 Medium</div>
+                        </div>
+                        <div class="bg-gray-900 rounded-lg p-3 flex-1">
+                            <div class="text-2xl font-bold text-green-400">1</div>
+                            <div class="text-xs text-gray-500">🟢 Low</div>
+                        </div>
+                        <div class="bg-gray-900 rounded-lg p-3 flex-1">
+                            <div class="text-2xl font-bold text-white">4</div>
+                            <div class="text-xs text-gray-500">Total Issues</div>
+                        </div>
+                    </div>
+
+                    <!-- Issue Cards -->
+                    <div class="space-y-3">
+                        <!-- Issue 1 (High) -->
+                        <div class="issue-card border-red-500">
+                            <div class="flex items-center justify-between mb-3">
+                                <div class="flex items-center gap-2">
+                                    <span class="badge badge-red">🔴 High</span>
+                                    <span class="font-semibold text-gray-900">useEffect Missing Cleanup Function</span>
+                                </div>
+                                <span class="text-xs text-gray-400 font-mono">line 23-27</span>
+                            </div>
+                            <div class="bg-gray-100 p-3 mb-3 rounded text-xs font-mono overflow-x-auto">
+    <span class="text-gray-500">// app/api/auth/github/callback/route.ts</span>
+    useEffect(() =&gt; {
+      const code = searchParams.get('code');
+      fetch('/api/exchange', { method: 'POST', body: JSON.stringify({ code }) });
+    }, []);
+                            </div>
+                            <div class="mb-2">
+                                <span class="text-xs font-semibold text-gray-700">Why:</span>
+                                <p class="text-sm text-gray-700 ml-2">
+                                    异步请求没有 abort 处理，组件卸载时可能写入已卸载组件的 state → React 警告。
+                                </p>
+                            </div>
+                            <details class="mt-2">
+                                <summary class="cursor-pointer text-sm font-semibold text-blue-600 hover:underline">
+                                    🔧 查看修复代码
+                                </summary>
+                                <pre class="bg-gray-900 text-gray-100 p-3 rounded mt-2 text-xs font-mono mt-2">useEffect(() =&gt; {
+  const controller = new AbortController();
+  const code = searchParams.get('code');
+  fetch('/api/exchange', {
+    method: 'POST',
+    body: JSON.stringify({ code }),
+    signal: controller.signal,
+  }).catch(e =&gt; {
+    if (e.name !== 'AbortError') console.error(e);
+  });
+  return () =&gt; controller.abort();
+}, []);</pre>
+                            </details>
+                        </div>
+
+                        <!-- Issue 2 (Medium) -->
+                        <div class="issue-card border-yellow-500">
+                            <div class="flex items-center justify-between mb-3">
+                                <div class="flex items-center gap-2">
+                                    <span class="badge badge-yellow">🟡 Medium</span>
+                                    <span class="font-semibold text-gray-900">Token Not Refreshed</span>
+                                </div>
+                                <span class="text-xs text-gray-400 font-mono">line 45</span>
+                            </div>
+                            <div class="bg-gray-100 p-3 mb-3 rounded text-xs font-mono overflow-x-auto">
+    <span class="text-gray-500">// lib/jwt.ts</span>
+    <span class="text-blue-500">const</span> token = <span class="text-purple-500">user.accessToken</span>;
+    <span class="text-blue-500">const</span> res = <span class="text-purple-500">await</span> fetch('/repos/...', {
+      headers: { <span class="text-blue-400">Authorization</span>: <span class="text-green-500">`Bearer ${token}`</span> },
+    });
+                            </div>
+                            <div class="mb-2">
+                                <span class="text-xs font-semibold text-gray-700">Why:</span>
+                                <p class="text-sm text-gray-700 ml-2">
+                                    GitHub token 12小时过期，需在 401 时自动调用 refresh endpoint。
+                                </p>
+                            </div>
+                            <details class="mt-2">
+                                <summary class="cursor-pointer text-sm font-semibold text-blue-600 hover:underline">
+                                    🔧 查看修复代码
+                                </summary>
+                                <pre class="bg-gray-900 text-gray-100 p-3 rounded mt-2 text-xs font-mono">async function githubFetch(path: string) {
+  if (isTokenExpiring()) await refreshToken();
+  const res = await fetch(path, {
+    headers: { Authorization: `Bearer ${getToken()}` },
+  });
+  if (res.status === 401) {
+    await refreshToken();
+    return githubFetch(path); // 重试
+  }
+  return res;
+}</pre>
+                            </details>
+                        </div>
+
+                        <!-- Issue 3 (Low) -->
+                        <div class="issue-card border-green-500">
+                            <div class="flex items-center justify-between mb-3">
+                                <div class="flex items-center gap-2">
+                                    <span class="badge badge-green">🟢 Low</span>
+                                    <span class="font-semibold text-gray-900">Missing Input Validation</span>
+                                </div>
+                                <span class="text-xs text-gray-400 font-mono">line 68</span>
+                            </div>
+                            <div class="bg-gray-100 p-3 mb-3 rounded text-xs font-mono overflow-x-auto">
+    <span class="text-gray-500">// app/api/repos/route.ts</span>
+    <span class="text-purple-500">const</span> { owner, repo } = req.query;
+    <span class="text-purple-500">const</span> result = <span class="text-purple-500">await</span> fetchGitHub(`.../repos/${owner}/${repo}`);
+                            </div>
+                            <div class="mb-2">
+                                <span class="text-xs font-semibold text-gray-700">Why:</span>
+                                <p class="text-sm text-gray-700 ml-2">
+                                    未对 owner/repo 做格式校验，可能触发 SSRF（虽然经过 GitHub API 风险较低）。
+                                </p>
+                            </div>
+                            <details class="mt-2">
+                                <summary class="cursor-pointer text-sm font-semibold text-blue-600 hover:underline">
+                                    🔧 查看修复代码
+                                </summary>
+                                <pre class="bg-gray-900 text-gray-100 p-3 rounded mt-2 text-xs font-mono">const REPO_RE = /^[\w.-]+\/[\w.-]+$/;
+if (!REPO_RE.test(`${owner}/${repo}`)) {
+  return Response.json({ error: 'Invalid repo name' }, { status: 400 });
+}</pre>
+                            </details>
+                        </div>
+                    </div>
+
+                    <!-- Loading State -->
+                    <div class="mt-6 text-xs text-gray-500 font-mono">
+                        ⚠ Some files were truncated by GitHub's API (3000+ lines limit).
+                        Consider reviewing individual files for full coverage.
+                    </div>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-2 gap-6 mt-6">
+                <div class="card">
+                    <h3 class="font-bold text-gray-900 mb-3">✅ 优点</h3>
+                    <ul class="list-disc list-inside text-sm text-gray-700 space-y-1">
+                        <li>一眼看到严重度分布</li>
+                        <li>代码定位精确（行号）</li>
+                        <li>Why / Fix 分离展示</li>
+                        <li>修复代码可折叠</li>
+                    </ul>
+                </div>
+                <div class="card">
+                    <h3 class="font-bold text-gray-900 mb-3">⚠️ 需要LLM配合</h3>
+                    <ul class="list-disc list-inside text-sm text-gray-700 space-y-1">
+                        <li>要求 LLM 输出结构化 JSON</li>
+                        <li>Prompt 变化：从正文到 "返回issues数组"</li>
+                        <li>解析容错（LLM 偶尔返回不成）</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="card mt-4">
+                <h3 class="text-lg font-bold text-gray-900 mb-2">📐 对应的Prompt修改</h3>
+                <p class="text-sm text-gray-600 mb-3">
+                    从当前 "输出 markdown" 改为 "输出 JSON，包含 severity / line / why / fix / snippet"，
+                    前端负责渲染为Issue Cards。
+                </p>
+                <pre class="bg-gray-900 text-gray-100 p-4 rounded-lg text-xs font-mono">Return ONLY a JSON object:
+{
+  "summary": "总体结论几行",
+  "issues": [
+    {
+      "severity": "high" | "medium" | "low",
+      "line": 23,
+      "snippet": "原代码片段",
+      "why": "为什么会出问题",
+      "fix": "修复后的代码"
+    }
+  ]
+}</pre>
+            </div>
+        </section>
+
+        <!-- 核心功能需求 -->
+        <section class="mt-12">
+            <h2 class="text-3xl font-bold text-gray-900 mb-8 flex items-center gap-3">
+                <span class="step-number">7</span> 功能需求
+            </h2>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div class="card border-l-4 border-gray-400">
+                    <div class="flex items-center justify-between mb-2">
+                        <span class="badge badge-red">FR-1</span>
+                        <span class="text-xs text-gray-500">OAuth</span>
+                    </div>
+                    <h3 class="font-semibold text-gray-900 mb-2">GitHub 登录</h3>
+                    <ul class="list-disc list-inside text-sm text-gray-700 space-y-1">
+                        <li>支持 Device Flow / Web 直跳</li>
+                        <li>token 存加密 HttpOnly Cookie</li>
+                        <li>12小时后自动过期，需重新登录</li>
+                        <li>显示当前登录用户的 avatar 和 login</li>
+                    </ul>
+                </div>
+
+                <div class="card border-l-4 border-gray-400">
+                    <div class="flex items-center justify-between mb-2">
+                        <span class="badge badge-red">FR-2</span>
+                        <span class="text-xs text-gray-500">Repo</span>
+                    </div>
+                    <h3 class="font-semibold text-gray-900 mb-2">仓库列表</h3>
+                    <ul class="list-disc list-inside text-sm text-gray-700 space-y-1">
+                        <li>拉取当前用户的所有 repo</li>
+                        <li>显示名称、语言占比、最近更新</li>
+                        <li>本地搜索过滤</li>
+                        <li>显示 star 数和主要语言</li>
+                    </ul>
+                </div>
+
+                <div class="card border-l-4 border-gray-400">
+                    <div class="flex items-center justify-between mb-2">
+                        <span class="badge badge-red">FR-3</span>
+                        <span class="text-xs text-gray-500">PR列表</span>
+                    </div>
+                    <h3 class="font-semibold text-gray-900 mb-2">PR 列表</h3>
+                    <ul class="list-disc list-inside text-sm text-gray-700 space-y-1">
+                        <li>展示 open PRs（title、作者、日期）</li>
+                        <li>区分 draft / ready-for-review</li>
+                        <li>可搜索 / 排序</li>
+                        <li>缓存 5分钟，避免频繁 API 调用</li>
+                    </ul>
+                </div>
+
+                <div class="card border-l-4 border-gray-400">
+                    <div class="flex items-center justify-between mb-2">
+                        <span class="badge badge-red">FR-4</span>
+                        <span class="text-xs text-gray-500">Diff拉取</span>
+                    </div>
+                    <h3 class="font-semibold text-gray-900 mb-2">智能Diff抓取</h3>
+                    <ul class="list-disc list-inside text-sm text-gray-700 space-y-1">
+                        <li>调用 files API 拉所有变更文件</li>
+                        <li>每个文件有 patch 字段作为diff</li>
+                        <li>拼接为大 diff 文本传给 LLM</li>
+                        <li>处理 3000+ 行截断提示</li>
+                    </ul>
+                </div>
+
+                <div class="card border-l-4 border-gray-400">
+                    <div class="flex items-center justify-between mb-2">
+                        <span class="badge badge-red">FR-5</span>
+                        <span class="text-xs text-gray-500">LLM</span>
+                    </div>
+                    <h3 class="font-semibold text-gray-900 mb-2">AI 审查</h3>
+                    <ul class="list-disc list-inside text-sm text-gray-700 space-y-1">
+                        <li>使用 AI SDK v7 streamText 流式</li>
+                        <li>按严重度排序输出</li>
+                        <li>输出结构化 JSON（见第6节）</li>
+                        <li>支持 React/TS/JSX 解析</li>
+                    </ul>
+                </div>
+
+                <div class="card border-l-4 border-gray-400">
+                    <div class="flex items-center justify-between mb-2">
+                        <span class="badge badge-red">FR-6</span>
+                        <span class="text-xs text-gray-500">UI</span>
+                    </div>
+                    <h3 class="font-semibold text-gray-900 mb-2">Issue Cards 渲染</h3>
+                    <ul class="list-disc list-inside text-sm text-gray-700 space-y-1">
+                        <li>每条问题一个卡片</li>
+                        <li>严重度色块 + 代码snippet</li>
+                        <li>Why / Fix 分段（代码可折叠）</li>
+                        <li>统计栏：High / Medium / Low / Total</li>
+                        <li>支持刷新的多轮对话</li>
+                    </ul>
+                </div>
+
+                <div class="card border-l-4 border-gray-400">
+                    <div class="flex items-center justify-between mb-2">
+                        <span class="badge badge-red">FR-7</span>
+                        <span class="text-xs text-gray-500">本地存储</span>
+                    </div>
+                    <h3 class="font-semibold text-gray-900 mb-2">历史记录</h3>
+                    <ul class="list-disc list-inside text-sm text-gray-700 space-y-1">
+                        <li>每次Review结果存 localStorage</li>
+                        <li>"最近审查"快速入口</li>
+                        <li>限制 LRU 50条</li>
+                        <li>显示Token用量</li>
+                    </ul>
+                </div>
+
+                <div class="card border-l-4 border-gray-400">
+                    <div class="flex items-center justify-between mb-2">
+                        <span class="badge badge-red">FR-8</span>
+                        <span class="text-xs text-gray-500">手动</span>
+                    </div>
+                    <h3 class="font-semibold text-gray-900 mb-2">Raw Code 备用</h3>
+                    <ul class="list-disc list-inside text-sm text-gray-700 space-y-1">
+                        <li>保留"粘贴代码"入口</li>
+                        <li>用于审查未提交的代码片段</li>
+                        <li>不在此阶段做文件上传</li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+
+        <!-- 非功能需求 -->
+        <section class="mt-12">
+            <h2 class="text-3xl font-bold text-gray-900 mb-8 flex items-center gap-3">
+                <span class="step-number">8</span> 非功能需求
+            </h2>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div class="card p-4">
+                    <p class="font-semibold text-gray-900 mb-2">性能</p>
+                    <ul class="list-disc list-inside text-xs text-gray-700">
+                        <li>首屏 &lt; 1.5s</li>
+                        <li>OAuth 完成 &lt; 3s</li>
+                        <li>Repo 列表 &lt; 2s</li>
+                        <li>AI 首字 &lt; 2s</li>
+                    </ul>
+                </div>
+                <div class="card p-4">
+                    <p class="font-semibold text-gray-900 mb-2">安全</p>
+                    <ul class="list-disc list-inside text-xs text-gray-700">
+                        <li>Cookie HttpOnly+Secure</li>
+                        <li>JWE加密 token</li>
+                        <li>CSRF 防护</li>
+                        <li>不输入 XSS 直接渲染用户内容</li>
+                    </ul>
+                </div>
+                <div class="card p-4">
+                    <p class="font-semibold text-gray-900 mb-2">可靠性</p>
+                    <ul class="list-disc list-inside text-xs text-gray-700">
+                        <li>GitHub API 失败重试</li>
+                        <li>优雅降级</li>
+                        <li>错误提示清晰</li>
+                        <li>Vercel 冷启动 &lt; 100ms</li>
+                    </ul>
+                </div>
+                <div class="card p-4">
+                    <p class="font-semibold text-gray-900 mb-2">可维护</p>
+                    <ul class="list-disc list-inside text-xs text-gray-700">
+                        <li>结构化目录</li>
+                        <li>类型完整</li>
+                        <li>日志清晰</li>
+                        <li>测试覆盖核心流程</li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+
+        <!-- 现有代码审查 -->
+        <section class="mt-12">
+            <h2 class="text-3xl font-bold text-gray-900 mb-8 flex items-center gap-3">
+                <span class="step-number">9</span> 现有代码审查
+            </h2>
+
+            <div class="card bg-green-50 border-green-200">
+                <h3 class="text-lg font-bold text-green-800 mb-4">✅ 优点</h3>
+                <ul class="list-disc list-inside text-gray-700 space-y-2">
+                    <li><strong>架构清晰：</strong>前后端分离，组件化设计</li>
+                    <li><strong>技术选型合理：</strong>AI SDK v7、Next.js、TypeScript</li>
+                    <li><strong>原型丰富：</strong>三个UI变体提供了充分的设计选择</li>
+                    <li><strong>类型安全：</strong>完整的TypeScript类型定义</li>
+                    <li><strong>流式处理：</strong>用户体验流畅</li>
+                    <li><strong>专注React：</strong>QA/ML领域明确</li>
+                </ul>
+            </div>
+
+            <div class="card border-yellow-200 mt-4">
+                <h3 class="text-lg font-bold text-yellow-800 mb-4">⚠️ 改进建议</h3>
+                <ol class="list-decimal list-inside text-gray-700 space-y-2">
+                    <li>补充输入长度限制校验</li>
+                    <li>区分错误类型，返回合理HTTP状态码</li>
+                    <li>添加请求限流</li>
+                    <li>Circuit breaker 缓存高频相同URL</li>
+                    <li>添加单元测试</li>
+                    <li>滚动到统计栏优化</li>
+                    <li>添加长 diff 截断提示</li>
+                </ol>
+            </div>
+
+            <div class="card bg-blue-50 mt-4">
+                <h3 class="text-lg font-bold text-blue-800 mb-4">🔥 核心 Prompt 修改（已落地）</h3>
+                <p class="text-gray-700 mb-3">
+                    旧 Prompt 让模型输出 markdown 正文（🔴/🟡/🟢 分节），这与结构化输出冲突，
+                    已改写为与 <code>reviewSchema</code> 一致的对象描述。注意：是否真是 JSON
+                    由 <code>Output.object</code> 约束，Prompt <strong>不再要求"只返回 JSON"</strong>，
+                    只描述每个字段该写什么——两处同时强制反而容易让模型把 JSON 包进代码块。
+                </p>
+                <pre class="bg-gray-900 text-gray-100 p-4 rounded-lg text-xs font-mono overflow-x-auto">// lib/review-schema.ts — 服务端与客户端共用的唯一来源
+export const reviewIssueSchema = z.object({
+  severity: z.enum(["high", "medium", "low"]),
+  title: z.string(),
+  file: z.string(),
+  startLine: z.number().int(),
+  endLine: z.number().int().optional(),
+  why: z.string(),
+  fix: z.string(),
+});
+export const reviewSchema = z.object({
+  summary: z.string(),
+  issues: z.array(reviewIssueSchema),
+});
+
+// app/api/review/route.ts
+const result = streamText({
+  model: process.env.AI_MODEL ?? "openai/gpt-5-mini",
+  instructions: REVIEW_PROMPT,
+  prompt: buildReviewPrompt(body),
+  abortSignal: req.signal,
+  output: Output.object({ schema: reviewSchema }),
+});
+return result.toTextStreamResponse();</pre>
+            </div>
+        </section>
+
+        <!-- 实施路线图 -->
+        <section class="mt-12">
+            <h2 class="text-3xl font-bold text-gray-900 mb-8 flex items-center gap-3">
+                <span class="step-number">10</span> 实施路线图
+            </h2>
+
+            <!-- Phase 1 -->
+            <div class="card border-l-4 border-green-500">
+                <div class="flex items-center gap-3 mb-4">
+                    <span class="badge badge-green">Phase 1</span>
+                    <span class="badge badge-green">已完成</span>
+                    <h3 class="text-xl font-bold text-gray-900">GitHub OAuth + Repo + PR 拉取</h3>
+                    <span class="text-sm text-gray-500">5-7天</span>
+                </div>
+                <ol class="list-decimal list-inside text-gray-700 space-y-2">
+                    <li>注册 GitHub OAuth App，拿到 Client ID/Secret</li>
+                    <li>实现 /api/auth/github/callback 交换token</li>
+                    <li>用 jose (JWE) 加密 token 存 Cookie</li>
+                    <li>实现 middleware 解密注入 req.user</li>
+                    <li>实现 /api/repos 拉取当前用户所有repos</li>
+                    <li>实现 /api/prs?repo=xxx 拉取 open PRs</li>
+                    <li>实现 /api/prs/:repo/:pr/files 拉取变更文件</li>
+                    <li>登录UI：点击按钮跳转GitHub，回调成功</li>
+                    <li>Repo选择页：列出所有repos</li>
+                    <li>PR列表页：列出某个repo的PRs</li>
+                </ol>
+            </div>
+
+            <!-- Phase 2 -->
+            <div class="card border-l-4 border-blue-500">
+                <div class="flex items-center gap-3 mb-4">
+                    <span class="badge badge-blue">Phase 2</span>
+                    <span class="badge badge-green">已完成</span>
+                    <h3 class="text-xl font-bold text-gray-900">PR diff 审查 + Issue Cards</h3>
+                    <span class="text-sm text-gray-500">3-5天</span>
+                </div>
+                <ol class="list-decimal list-inside text-gray-700 space-y-2">
+                    <li>把PR patch拼接成diff文本</li>
+                    <li>改造 Prompt：输出结构化 JSON 而非 markdown</li>
+                    <li>后端解析LLM流，实时流式输出</li>
+                    <li>前端渲染 Issue Cards（含色条/行号/Why/Fix）</li>
+                    <li>统计栏 High / Medium / Low / Total</li>
+                    <li>错误状态：PR 文件太多降级显示</li>
+                    <li>自动存入 localStorage</li>
+                    <li>本地"最近审查"快速入口</li>
+                </ol>
+            </div>
+
+            <!-- Phase 3 -->
+            <div class="card border-l-4 border-purple-500">
+                <div class="flex items-center gap-3 mb-4">
+                    <span class="badge badge-purple">Phase 3</span>
+                    <h3 class="text-xl font-bold text-gray-900">体验打磨</h3>
+                    <span class="text-sm text-gray-500">3-4天</span>
+                </div>
+                <ol class="list-decimal list-inside text-gray-700 space-y-2">
+                    <li>重设计 Variant B 布局为 3 面板（Repo列表 + PR列表 + Diff视图）</li>
+                    <li>键盘快捷键（Cmd+Enter提交、Esc 关闭）</li>
+                    <li>加载动画 / 骨架屏 / 空状态</li>
+                    <li>错误重试机制 / Toast 提示</li>
+                    <li>头像、用户名、登出按钮</li>
+                    <li>Detect "PR 已关闭" 状态</li>
+                    <li>T9 快速跳转 PR（输入数字直接开审）</li>
+                    <li>Token 用量显示（每次review消耗的 token）</li>
+                </ol>
+            </div>
+
+            <!-- Phase 4 -->
+            <div class="card border-l-4 border-gray-500">
+                <div class="flex items-center gap-3 mb-4">
+                    <span class="badge badge-gray">Phase 4 (远期)</span>
+                    <h3 class="text-xl font-bold text-gray-900">扩展能力</h3>
+                    <span class="text-sm text-gray-500">3-4周</span>
+                </div>
+                <ol class="list-decimal list-inside text-gray-700 space-y-2">
+                    <li>GitHub App 安装，接收 Webhook 自动review</li>
+                    <li>Bot 评论回 PR（Review结果以app身份发布）</li>
+                    <li>PDF / Markdown 导出审查报告</li>
+                    <li>多文件批量审查</li>
+                    <li>GitHub Actions 集成</li>
+                    <li>VS Code / Cursor 插件</li>
+                    <li>支持更多语言（Vue/Svelte/Python/Go）</li>
+                    <li>AI 解释修复建议（让AI解释它为什么推荐这个修复）</li>
+                </ol>
+            </div>
+        </section>
+
+        <!-- 目录结构 -->
+        <section class="mt-12">
+            <h2 class="text-3xl font-bold text-gray-900 mb-8 flex items-center gap-3">
+                <span class="step-number">11</span> 实际项目结构
+            </h2>
+            <div class="card bg-gray-900 text-gray-100">
+                <pre class="bg-gray-950 text-gray-300 p-4 rounded-lg text-sm font-mono overflow-x-auto"><code>code-review-agent/
+├── app/
+│   ├── api/
+│   │   ├── auth/github/route.ts                 # 发起授权
+│   │   ├── auth/callback/route.ts               # 校验 state，换 token
+│   │   ├── auth/signout/route.ts                # 清除会话
+│   │   ├── me/route.ts                          # 当前用户
+│   │   ├── repos/route.ts                       # 仓库列表
+│   │   ├── repos/[owner]/[repo]/prs/route.ts    # PR 列表
+│   │   ├── repos/[owner]/[repo]/prs/[number]/route.ts       # PR 元数据
+│   │   ├── repos/[owner]/[repo]/prs/[number]/diff/route.ts  # 解析 diff
+│   │   └── review/route.ts                      # 流式结构化审查
+│   ├── components/
+│   │   ├── CodeReviewApp.tsx                    # 客户端编排
+│   │   ├── AuthGate.tsx  Header.tsx             # 登录 / 顶栏
+│   │   ├── RepoRail.tsx  DiffView.tsx            # 左 rail / 中 diff
+│   │   └── IssueCards.tsx                       # 右 Issue Cards
+│   ├── prototype-ui/                            # 早期布局变体（不参与构建页面）
+│   ├── globals.css
+│   ├── layout.tsx
+│   └── page.tsx
+├── lib/
+│   ├── github-auth.ts                           # 会话签名 / state / 回调地址
+│   ├── github.ts                                # GitHub REST 调用
+│   ├── diff.ts                                  # patch → 行记录
+│   ├── review-schema.ts                         # zod schema（双端共用）
+│   ├── review-prompt.ts                         # prompt 构建入口
+│   ├── review-core.ts                           # 锚定 / prompt / review → Issue[]
+│   ├── use-review.ts                            # useObject 流 → Issue[]
+│   ├── prompt.ts                                # 系统提示词
+│   └── types.ts                                 # 共享类型
+├── tests/                                       # Vitest
+│   ├── diff.test.ts
+│   ├── github-auth.test.ts
+│   ├── review-core.test.ts
+│   ├── review-prompt.test.ts
+│   └── review-route.test.ts
+├── vitest.config.ts
+├── DESIGN.md                                    # 设计系统（颜色/间距/组件）
+├── PRODUCT.md                                   # 产品定义
+├── DESIGN-REVIEW.html                           # 本文档
+└── package.json</code></pre>
+            </div>
+            <p class="text-sm text-gray-600 mt-3">
+                与最初设想不同：没有 <code>middleware.ts</code>（route handler 各自读 cookie）、
+                没有 <code>lib/github/client.ts</code> 子目录（单文件足够）、
+                没有单独的 <code>/projects</code> 与 <code>/review</code> 路由（单页三栏）。
+            </p></section>
+
+        <!-- 总结 -->
+        <section class="mt-12">
+            <h2 class="text-3xl font-bold text-gray-900 mb-8 flex items-center gap-3">
+                <span class="step-number">12</span> 总结与下一步
+            </h2>
+
+            <div class="card bg-gradient-to-r from-blue-50 to-purple-50 border-0">
+                <h3 class="text-lg font-bold text-gray-900 mb-3">✅ 已完成（对照本设计的 12 节）</h3>
+                <ul class="list-disc list-inside text-sm text-gray-700 space-y-1">
+                    <li>第 2 节工作流：OAuth → 选仓库 → 列 PR → 拉 diff → 流式 Issue Cards，全部跑通</li>
+                    <li>第 4 节认证：改为授权码流 + HMAC 签名 Cookie（见顶部实现状态）</li>
+                    <li>第 5 节接口：repos / prs / pr detail / diff 四个 route handler</li>
+                    <li>第 6 节可视化：三栏布局 + 严重度色条 + 双向 line↔card 高亮</li>
+                    <li>第 9 节 Prompt：结构化 schema，服务端与客户端共用</li>
+                    <li>第 11 节结构：已替换为真实文件树</li>
+                </ul>
+            </div>
+
+            <div class="grid grid-cols-2 gap-4 mt-4">
+                <div class="card border-l-4 border-green-500">
+                    <h3 class="font-bold text-gray-900 mb-3">✅ 项目当前优势</h3>
+                    <ul class="list-disc list-inside text-sm text-gray-700 space-y-1">
+                        <li>真实数据全链路，不再依赖 mock</li>
+                        <li>无数据库 / 无会话存储，部署门槛低</li>
+                        <li>42 个测试覆盖解析、鉴权、锚定与流式路由</li>
+                        <li>技术栈新、维护性好</li>
+                    </ul>
+                </div>
+                <div class="card border-l-4 border-blue-500">
+                    <h3 class="font-bold text-gray-900 mb-3">🎯 演进方向</h3>
+                    <ul class="list-disc list-inside text-sm text-gray-700 space-y-1">
+                        <li>历史记录（localStorage）</li>
+                        <li>审查结果回写为 PR review comment</li>
+                        <li>支持审查本地未提交改动</li>
+                        <li>体验打磨，作品感强</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="card mt-6 bg-gray-900 text-white">
+                <h3 class="text-lg font-bold mb-4">🚀 当前还差的事</h3>
+                <ol class="list-decimal list-inside space-y-3">
+                    <li>
+                        <strong>配置 GitHub OAuth App 凭据：</strong>
+                        在
+                        <a class="text-blue-300 underline" href="https://github.com/settings/developers" target="_blank">github.com/settings/developers</a>
+                        建一个 OAuth App，Callback URL 填 <code>http://localhost:3000/api/auth/callback</code>，
+                        把 Client ID / Secret 写进 <code>.env.local</code>。没有这一步应用会停在登录页。
+                        （代码已就绪，见第 4 节。）
+                    </li>
+                    <li>
+                        <strong>部署时登记线上回调：</strong>
+                        同一个 App 里再加一条
+                        <code>https://&lt;your-app&gt;.vercel.app/api/auth/callback</code>，
+                        并把两个凭据配到 Vercel 环境变量。回调地址由请求 host 推导，代码不用改。
+                    </li>
+                    <li>
+                        <strong>可选的下一步：</strong>
+                        ① 历史记录（localStorage，见上表"未做"）；
+                        ② 把 Issue 作为 GitHub review comment 发回 PR；
+                        ③ 支持审查未提交的本地改动而不仅是 PR。
+                    </li>
+                </ol>
+                <p class="mt-4 text-sm text-gray-400">已完成：OAuth 登录 · repo/PR/diff 拉取 · 结构化流式审查 · 行号锚定 · 42 个测试</p>
+            </div>
+        </section>
+
+        <!-- Footer -->
+        <footer class="mt-16 pt-8 border-t text-center text-gray-500">
+            <p class="mb-2">📝 Code Review Agent - 设计评审（GitHub OAuth + Issue Cards）· 已实现</p>
+            <p class="text-sm">个人作品 · 单用户 · 签名 Cookie · 2026-11-09 设计 / 2026-11-10 实现</p>
+        </footer>
+    </div>
+</body>
+</html>
