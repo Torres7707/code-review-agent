@@ -1,12 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { anchorReviewLines, annotateDiffWithIssues, issuesFromReview } from "@/lib/review-core";
+import {
+  anchorReviewLines,
+  annotateDiffWithIssues,
+  countBySeverity,
+  issuesFromReview,
+  matchDiffFile,
+  reviewCoverage,
+} from "@/lib/review-core";
 import type { FileDiff } from "@/lib/types";
 
-function file(path: string, newLineNumbers: number[]): FileDiff {
+function file(path: string, newLineNumbers: number[], scope: FileDiff["scope"] = "full"): FileDiff {
   return {
     path,
     additions: newLineNumbers.length,
     deletions: 0,
+    scope,
     lines: newLineNumbers.map((newNo) => ({
       type: "add" as const,
       newNo,
@@ -25,7 +33,7 @@ describe("issuesFromReview", () => {
   });
 
   it("maps a partial streamed issue into the card shape", () => {
-    const issues = issuesFromReview(
+    const [issue] = issuesFromReview(
       {
         issues: [
           {
@@ -33,6 +41,7 @@ describe("issuesFromReview", () => {
             title: "Stale closure in effect",
             file: "src/app/page.tsx",
             startLine: 42,
+            quote: "setCount(count + 1)",
             why: "count is captured once",
             fix: "use a ref",
           },
@@ -41,16 +50,17 @@ describe("issuesFromReview", () => {
       "pr-4821",
     );
 
-    expect(issues).toHaveLength(1);
-    expect(issues[0]).toEqual({
+    expect(issue).toEqual({
       id: "pr-4821-0",
       severity: "high",
       title: "Stale closure in effect",
       file: "src/app/page.tsx",
-      startLine: 42,
+      line: null,
+      reportedLine: 42,
+      anchor: "none",
+      quote: "setCount(count + 1)",
       why: "count is captured once",
       fix: "use a ref",
-      status: "open",
     });
   });
 
@@ -67,79 +77,143 @@ describe("issuesFromReview", () => {
   it("defaults missing fields instead of emitting undefined", () => {
     const [issue] = issuesFromReview({ issues: [{ title: "x" }] }, "pr-1");
 
-    expect(issue).toMatchObject({ severity: "low", file: "", startLine: 1, why: "", fix: "" });
+    expect(issue).toMatchObject({ severity: "low", file: "", reportedLine: 1, why: "", fix: "" });
     expect(issue).not.toHaveProperty("endLine");
   });
 
-  it("stops assuming anything about the id prefix without one", () => {
-    const [issue] = issuesFromReview({ issues: [{ title: "x" }] }, null);
+  it("namespaces ids by the given prefix", () => {
+    const [issue] = issuesFromReview({ issues: [{ title: "x" }] }, "a/b#1@sha");
 
-    expect(issue?.id).toBe("review-0");
+    expect(issue?.id).toBe("a/b#1@sha-0");
+  });
+});
+
+describe("matchDiffFile", () => {
+  const files = [file("src/app/page.tsx", [1]), file("src/app/MyPage.tsx", [1])];
+
+  it("matches a suffix only on a path boundary", () => {
+    expect(matchDiffFile("app/page.tsx", files)?.path).toBe("src/app/page.tsx");
+    expect(matchDiffFile("Page.tsx", files)).toBeNull();
+  });
+
+  it("ignores a leading ./", () => {
+    expect(matchDiffFile("./src/app/page.tsx", files)?.path).toBe("src/app/page.tsx");
   });
 });
 
 describe("anchorReviewLines", () => {
   const files = [file("src/app/page.tsx", [10, 11, 12, 40, 41, 42]), file("src/lib/useUser.ts", [1, 2, 3])];
 
-  it("keeps an exact file and line", () => {
-    const [issue] = anchorReviewLines({ issues: [{ title: "x", file: "src/app/page.tsx", startLine: 11 }] }, files);
+  it("marks an existing line with matching quote as exact", () => {
+    const [issue] = anchorReviewLines(
+      { issues: [{ title: "x", file: "src/app/page.tsx", startLine: 11, quote: "line 11" }] },
+      files,
+      "p",
+    );
 
-    expect(issue).toMatchObject({ file: "src/app/page.tsx", startLine: 11 });
+    expect(issue).toMatchObject({ file: "src/app/page.tsx", line: 11, anchor: "exact" });
   });
 
-  it("snaps a changed-but-unshown line to the nearest rendered line", () => {
-    const [issue] = anchorReviewLines({ issues: [{ title: "x", file: "src/app/page.tsx", startLine: 30 }] }, files);
+  it("follows the quote when the reported number is off", () => {
+    const [issue] = anchorReviewLines(
+      { issues: [{ title: "x", file: "src/app/page.tsx", startLine: 12, quote: "line 41" }] },
+      files,
+      "p",
+    );
 
-    expect(issue?.startLine).toBe(40);
+    expect(issue).toMatchObject({ line: 41, reportedLine: 12, anchor: "exact" });
+  });
+
+  it("snaps an unknown line to the nearest rendered line and says so", () => {
+    const [issue] = anchorReviewLines(
+      { issues: [{ title: "x", file: "src/app/page.tsx", startLine: 30, quote: "nowhere" }] },
+      files,
+      "p",
+    );
+
+    expect(issue).toMatchObject({ line: 40, reportedLine: 30, anchor: "approx" });
+  });
+
+  it("treats a quote mismatch on an existing line as approximate", () => {
+    const [issue] = anchorReviewLines(
+      { issues: [{ title: "x", file: "src/app/page.tsx", startLine: 11, quote: "something else" }] },
+      files,
+      "p",
+    );
+
+    expect(issue).toMatchObject({ line: 11, anchor: "approx" });
   });
 
   it("resolves a suffixed path to the diff file", () => {
-    const [issue] = anchorReviewLines({ issues: [{ title: "x", file: "useUser.ts", startLine: 2 }] }, files);
+    const [issue] = anchorReviewLines(
+      { issues: [{ title: "x", file: "useUser.ts", startLine: 2 }] },
+      files,
+      "p",
+    );
 
-    expect(issue).toMatchObject({ file: "src/lib/useUser.ts", startLine: 2 });
+    expect(issue).toMatchObject({ file: "src/lib/useUser.ts", line: 2, anchor: "exact" });
   });
 
-  it("drops a line that points at an unrelated file", () => {
-    const [issue] = anchorReviewLines({ issues: [{ title: "x", file: "README.md", startLine: 2 }] }, files);
+  it("leaves an issue on an unrelated file unanchored", () => {
+    const [issue] = anchorReviewLines(
+      { issues: [{ title: "x", file: "README.md", startLine: 2 }] },
+      files,
+      "p",
+    );
 
-    expect(issue).not.toHaveProperty("startLine");
+    expect(issue).toMatchObject({ line: null, anchor: "none", reportedLine: 2 });
   });
 
-  it("leaves the issue untouched when there are no diffs", () => {
-    const [issue] = anchorReviewLines({ issues: [{ title: "x", file: "a.ts", startLine: 5 }] }, []);
+  it("never anchors to a deleted line or a hunk header", () => {
+    const withDeletes: FileDiff = {
+      path: "a.ts",
+      additions: 1,
+      deletions: 1,
+      scope: "full",
+      lines: [
+        { type: "hunk", content: "@@ -1,1 +1,1 @@", severity: null, issueId: null },
+        { type: "del", oldNo: 1, content: "old", severity: null, issueId: null },
+        { type: "add", newNo: 1, content: "new", severity: null, issueId: null },
+      ],
+    };
+    const [issue] = anchorReviewLines(
+      { issues: [{ title: "x", file: "a.ts", startLine: 1, quote: "old" }] },
+      [withDeletes],
+      "p",
+    );
 
-    expect(issue).toMatchObject({ file: "a.ts", startLine: 5 });
+    expect(issue).toMatchObject({ line: 1, anchor: "approx" });
   });
 });
 
 describe("annotateDiffWithIssues", () => {
   const diffs = [file("src/app/page.tsx", [10, 11, 12]), file("src/lib/useUser.ts", [1, 2, 3])];
 
-  it("stamps the issue id and severity onto the matching rendered line", () => {
+  it("stamps the issue id, severity, and title onto the matching rendered line", () => {
     const issues = anchorReviewLines(
       { issues: [{ severity: "high", title: "x", file: "src/app/page.tsx", startLine: 11 }] },
       diffs,
+      "p",
     );
 
     const result = annotateDiffWithIssues(diffs, issues);
-    const page = result.find((f) => f.path === "src/app/page.tsx")!;
-    const hit = page.lines.find((l) => l.newNo === 11)!;
+    const hit = result.find((f) => f.path === "src/app/page.tsx")!.lines.find((l) => l.newNo === 11)!;
 
-    expect(hit.issueId).toBe(issues[0]!.id);
-    expect(hit.severity).toBe("high");
+    expect(hit).toMatchObject({ issueId: issues[0]!.id, severity: "high", issueTitle: "x" });
   });
 
   it("leaves unrelated lines and files untouched", () => {
     const issues = anchorReviewLines(
       { issues: [{ title: "x", file: "src/app/page.tsx", startLine: 11 }] },
       diffs,
+      "p",
     );
 
     const result = annotateDiffWithIssues(diffs, issues);
     const other = result.find((f) => f.path === "src/lib/useUser.ts")!;
 
-    expect(other.lines.every((l) => l.issueId === null)).toBe(true);
-    expect(result.filter((f) => f.path === "src/app/page.tsx")[0]!.lines.filter((l) => l.issueId !== null)).toHaveLength(1);
+    expect(other).toBe(diffs[1]);
+    expect(result[0]!.lines.filter((l) => l.issueId !== null)).toHaveLength(1);
   });
 
   it("prefers the higher severity when two issues share a line", () => {
@@ -151,17 +225,44 @@ describe("annotateDiffWithIssues", () => {
         ],
       },
       diffs,
+      "p",
     );
 
-    const result = annotateDiffWithIssues(diffs, issues);
-    const hit = result
-      .find((f) => f.path === "src/app/page.tsx")!
-      .lines.find((l) => l.newNo === 11)!;
+    const hit = annotateDiffWithIssues(diffs, issues)[0]!.lines.find((l) => l.newNo === 11)!;
 
     expect(hit.severity).toBe("high");
   });
 
+  it("does not stamp unanchored issues", () => {
+    const issues = anchorReviewLines({ issues: [{ title: "x", file: "nope.ts", startLine: 1 }] }, diffs, "p");
+
+    expect(annotateDiffWithIssues(diffs, issues)).toEqual(diffs);
+  });
+
   it("returns the input unchanged when there are no issues", () => {
     expect(annotateDiffWithIssues(diffs, [])).toBe(diffs);
+  });
+});
+
+describe("countBySeverity / reviewCoverage", () => {
+  it("counts issues per severity", () => {
+    const issues = anchorReviewLines(
+      { issues: [{ title: "a", severity: "high" }, { title: "b", severity: "high" }, { title: "c" }] },
+      [],
+      "p",
+    );
+
+    expect(countBySeverity(issues)).toEqual({ high: 2, medium: 0, low: 1 });
+  });
+
+  it("summarises which files were reviewed", () => {
+    const coverage = reviewCoverage([
+      file("a", [1]),
+      file("b", [1], "truncated"),
+      file("c", [1], "over-limit"),
+      file("d", [], "no-patch"),
+    ]);
+
+    expect(coverage).toEqual({ reviewed: 2, total: 4, truncated: 1, overLimit: 1, noPatch: 1 });
   });
 });

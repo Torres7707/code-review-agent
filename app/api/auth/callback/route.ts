@@ -1,11 +1,12 @@
 import {
-  GITHUB_CLIENT_ID,
-  GITHUB_CLIENT_SECRET,
   OAUTH_STATE_COOKIE,
   clearStateCookieHeader,
+  getGitHubRedirectUri,
+  githubClientId,
+  githubClientSecret,
   readCookie,
+  sealSession,
   sessionCookieHeader,
-  signSession,
 } from "@/lib/github-auth";
 
 function redirectWith(location: string, cookies: string[]): Response {
@@ -13,6 +14,34 @@ function redirectWith(location: string, cookies: string[]): Response {
   headers.set("Location", location);
   for (const c of cookies) headers.append("Set-Cookie", c);
   return new Response(null, { status: 302, headers });
+}
+
+async function exchangeCode(req: Request, code: string): Promise<string | null> {
+  try {
+    const res = await fetch("https://github.com/login/oauth/access_token", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({
+        client_id: githubClientId(),
+        client_secret: githubClientSecret(),
+        code,
+        redirect_uri: getGitHubRedirectUri(req),
+      }),
+    });
+    if (!res.ok) {
+      console.error("GitHub OAuth token exchange failed with status", res.status);
+      return null;
+    }
+    const json = (await res.json()) as { access_token?: string; error?: string };
+    if (!json.access_token) {
+      console.error("GitHub OAuth token exchange failed:", json.error);
+      return null;
+    }
+    return json.access_token;
+  } catch (error) {
+    console.error("GitHub OAuth token exchange failed:", error);
+    return null;
+  }
 }
 
 export async function GET(req: Request) {
@@ -23,28 +52,11 @@ export async function GET(req: Request) {
   const clearState = clearStateCookieHeader();
 
   if (!code || !state || !expectedState || state !== expectedState) {
-    return redirectWith("/?auth_error=1", [clearState]);
+    return redirectWith("/?auth_error=state", [clearState]);
   }
 
-  const tokenRes = await fetch("https://github.com/login/oauth/access_token", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
-    body: JSON.stringify({
-      client_id: GITHUB_CLIENT_ID,
-      client_secret: GITHUB_CLIENT_SECRET,
-      code,
-      redirect_uri: `${url.protocol}//${url.host}/api/auth/callback`,
-    }),
-  });
-  const tokenJson = (await tokenRes.json()) as {
-    access_token?: string;
-    error_description?: string;
-  };
-  if (!tokenJson.access_token) {
-    console.error("GitHub OAuth token exchange failed:", tokenJson.error_description);
-    return redirectWith("/?auth_error=1", [clearState]);
-  }
+  const token = await exchangeCode(req, code);
+  if (!token) return redirectWith("/?auth_error=exchange", [clearState]);
 
-  const signed = await signSession(tokenJson.access_token);
-  return redirectWith("/", [clearState, sessionCookieHeader(signed)]);
+  return redirectWith("/", [clearState, sessionCookieHeader(await sealSession(token))]);
 }

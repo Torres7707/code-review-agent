@@ -43,7 +43,7 @@ flashes in the severity color.
 | Framework | Next.js 16 (App Router, Turbopack, Cache Components) |
 | UI | React 19.3 + Tailwind v4 |
 | Model | `ai@7` AI SDK + `@ai-sdk/react@4`, Vercel AI Gateway |
-| Auth | GitHub OAuth App (stateless, HMAC-signed cookie) |
+| Auth | GitHub OAuth App (stateless, AES-GCM encrypted cookie) |
 | Tests | Vitest 5 |
 | Runtime | Node 24 (`.nvmrc`), pnpm |
 
@@ -73,7 +73,8 @@ AI_MODEL=openai/gpt-5-mini
 GITHUB_CLIENT_ID=
 GITHUB_CLIENT_SECRET=
 
-# Optional: separate HMAC key for the session cookie (falls back to the client secret)
+# Key for encrypting the session cookie. Required in production;
+# local dev falls back to the client secret. Generate one with: openssl rand -base64 32
 SESSION_SECRET=
 ```
 
@@ -87,20 +88,27 @@ pnpm dev           # http://localhost:3000
 
 ## The app in 60 seconds
 
-1. **Sign in** → redirects to GitHub's authorize page (`repo`, `read:user`), back to
-   `/api/auth/callback`. The access token is stored **only** in an `HttpOnly` cookie, signed
-   with HMAC-SHA256; the `state` parameter is checked against a short-lived cookie.
+1. **Sign in** → redirects to GitHub's authorize page (`repo` scope), back to
+   `/api/auth/callback`. The access token is stored **only** in an `HttpOnly` cookie,
+   encrypted with AES-GCM; the `state` parameter is checked against a short-lived cookie.
+   Signing out revokes the token at GitHub.
 2. **Pick a repo** → the left rail lists your most recently pushed repositories.
 3. **Pick a PR** → open PRs on that repo, with author and timestamps, load into the rail.
 4. **The diff loads** → GitHub's per-file `patch` is parsed into numbered add / del / context
-   lines in the centre panel.
-5. **The review streams** → `POST /api/review` fetches the PR files server-side with your
-   token, hands the hunks to the model with a structured-output schema, and the Issue
-   Cards appear as the JSON streams in — no wait for the full response.
-6. **Issues re-anchor** → each issue's reported line is mapped onto lines actually rendered
-   in the diff; lines elided by the diff viewer snap to the nearest visible line in the
-   same file, and issues pointing at a file that isn't in the PR lose their anchor rather
-   than lighting up the wrong line.
+   lines with real hunk separators. Each file says whether it was reviewed in full,
+   truncated, skipped over the file limit, or has no diff (binary / too large).
+5. **The review streams** → `POST /api/review` (signed-in only, accepts just
+   `{ owner, repo, number }`) fetches the PR files server-side with your token, writes the
+   new-file line number in front of every diff line, and hands that to the model with a
+   structured-output schema. Issue Cards appear as the JSON streams in. Stop, retry, and
+   re-run are available from the PR header.
+6. **Issues re-anchor** → each issue carries a `quote` of the offending code. The card is
+   anchored where the reported line and the quote agree; otherwise the quote is searched in
+   the file, and as a last resort the nearest rendered line is used and the card shows the
+   location as approximate (`≈`). Issues pointing at a file that isn't in the PR stay
+   unanchored.
+7. **Results are cached** per `owner/repo#number@headSha` in memory and `sessionStorage`,
+   so revisiting an unchanged PR costs nothing and a new push triggers a fresh review.
 
 ---
 
@@ -111,27 +119,28 @@ app/
   api/
     auth/github/route.ts      GET  → redirect to GitHub authorize (+ state cookie)
     auth/callback/route.ts    GET  ← code; verify state, exchange for token,
-                                   set signed session cookie, redirect to /
-    auth/signout/route.ts     POST → clear session cookie
+                                   set encrypted session cookie, redirect to /
+    auth/signout/route.ts     POST → revoke token at GitHub, clear session cookie
     me/route.ts               GET  → { user } or { user: null }
     repos/route.ts            GET  → the user's repos                 (401 unauth)
     repos/[owner]/[repo]/prs/route.ts         GET  → open PRs         (401 unauth)
-    repos/[owner]/[repo]/prs/[number]/route.ts GET  → one PR's totals  (401 unauth)
-    repos/[owner]/[repo]/prs/[number]/diff/route.ts GET → parsed diff (401  unauth)
+    repos/[owner]/[repo]/prs/[number]/diff/route.ts GET → PR details + parsed diff (401 unauth)
     review/route.ts           POST → streamed structured review
   components/
     CodeReviewApp.tsx         client orchestrator: session → repos → PRs → diff → review
-    Header.tsx  RepoRail.tsx  DiffView.tsx  IssueCards.tsx  AuthGate.tsx
+    Header.tsx  RepoRail.tsx  PRHeader.tsx  DiffView.tsx  IssueCards.tsx  AuthGate.tsx
 lib/
-  github-auth.ts              signed session cookie, state cookie, redirect URI
-  github.ts                   typed GitHub REST helper
-  diff.ts                     unified-patch → DiffView line records
+  github-auth.ts              encrypted session cookie, state cookie, token revocation
+  github.ts                   GitHub REST helper, pagination, owner/repo validation
+  api-client.ts               client-side fetch helper that never throws
+  diff.ts                     unified-patch → DiffView line records (with hunk rows)
   review-schema.ts            zod schema shared by route and client (useObject)
-  review-prompt.ts            model turn builder (PR header, file hunks, pasted code)
-  review-core.ts              pure: line anchoring, prompt building, review → Issue[]
-  use-review.ts               useObject stream → Issue[] with anchor correction
+  review-core.ts              pure: review planning, numbered prompt, line anchoring
+  review-status.ts            review state machine labels and error messages
+  review-cache.ts             head-SHA keyed cache (memory + sessionStorage)
+  use-review.ts               useObject stream with explicit status, stop and re-run
   types.ts                    shared domain types
-tests/                        Vitest: diff parser, session signing, review core, route
+tests/                        Vitest: diff parser, session, review core, route, DiffView
 ```
 
 ### The review contract
@@ -141,8 +150,8 @@ tests/                        Vitest: diff parser, session signing, review core,
 ```ts
 { summary: string,
   issues: [{ severity: "high" | "medium" | "low",
-             title, file: string, startLine: number, endLine?: number,
-             why, fix }] }
+             title, file: string, startLine: number, endLine: number | null,
+             quote, why, fix }] }
 ```
 
 It is passed to `streamText({ output: Output.object({ schema }) })` on the server and to
@@ -167,7 +176,10 @@ request's own host.
    GitHub accepts multiple callback URLs per OAuth App, so local dev keeps working
    unchanged.
 4. Deploy. The session cookie is marked `Secure` automatically when
-   `NODE_ENV=production`.
+   `NODE_ENV=production`, and the app refuses to start sessions without `SESSION_SECRET`.
+5. Consider a Vercel Firewall rate-limit rule on `/api/review`: every call spends model
+   tokens. The route already requires a signed-in user and only reviews PRs that user can
+   read.
 
 ---
 
@@ -178,7 +190,7 @@ pnpm dev            # next dev on :3000
 pnpm build          # production build
 pnpm start          # serve the build
 pnpm lint           # eslint
-pnpm typecheck      # tsc --noEmit
+pnpm typecheck      # next typegen && tsc --noEmit
 pnpm test           # vitest run
 pnpm test:watch     # vitest in watch mode
 ```
@@ -186,9 +198,12 @@ pnpm test:watch     # vitest in watch mode
 ## Notes and limits
 
 - GitHub's `files` API omits a `patch` for binary files and for diffs above its size
-  limit; those files are skipped in the diff view rather than shown truncated.
-- Large PRs are capped at 12 files and 8k characters of patch per file before going to
-  the model (`lib/review-core.ts`), purely to bound request cost.
+  limit; those files are listed in the diff view with a note instead of a diff.
+- Large PRs are capped at 12 reviewable files and 8k characters of patch per file (cut on a
+  line boundary) before going to the model (`lib/review-core.ts`), to bound request cost.
+  The diff view and the AI Review panel say which files were truncated or skipped.
 - The review is anchored line-by-line, not to postable GitHub review comments yet —
   everything stays local to the UI.
-- `app/prototype-ui/` holds earlier layout variants and is not part of the shipped app.
+- OAuth Apps cannot request read-only access to private repositories, so the app asks for
+  `repo` (which includes write access) and only ever reads with it. A GitHub App with
+  "Pull requests: read" and "Contents: read" would be the least-privilege alternative.

@@ -1,4 +1,4 @@
-import type { FileDiff } from "@/lib/types";
+import type { FileDiff, ReviewScope } from "@/lib/types";
 
 export type GitHubFilePatch = {
   filename: string;
@@ -11,13 +11,15 @@ const HUNK_HEADER = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/;
 
 /**
  * Parse a unified diff patch (as returned by the GitHub "list PR files" API)
- * into per-line records that DiffView can render. Lines map to the *new* file
- * because review issues are anchored there.
+ * into per-line records that DiffView can render. Hunk headers are kept as
+ * their own rows so the viewer can show where unchanged code was elided.
+ * Line numbers map to the *new* file because review issues are anchored there.
  */
 export function parsePatch(patch: string): FileDiff["lines"] {
   const out: FileDiff["lines"] = [];
   let oldNo = 0;
   let newNo = 0;
+  let inHunk = false;
 
   for (const line of patch.split("\n")) {
     if (line.startsWith("@@")) {
@@ -25,9 +27,12 @@ export function parsePatch(patch: string): FileDiff["lines"] {
       if (m) {
         oldNo = Number.parseInt(m[1], 10);
         newNo = Number.parseInt(m[2], 10);
+        inHunk = true;
+        out.push({ type: "hunk", content: line, severity: null, issueId: null });
       }
       continue;
     }
+    if (!inHunk) continue;
 
     // "\ No newline at end of file" and any malformed marker are not content.
     if (line.length === 0 || line[0] === "\\") continue;
@@ -44,19 +49,26 @@ export function parsePatch(patch: string): FileDiff["lines"] {
       oldNo += 1;
       newNo += 1;
     }
-    // Anything else (missing leading space, binary markers, etc.) is ignored.
+    // Anything else (binary markers, etc.) is ignored.
   }
 
   return out;
 }
 
-export function toFileDiffs(files: GitHubFilePatch[]): FileDiff[] {
-  return files
-    .filter((f) => typeof f.patch === "string" && f.patch.length > 0)
-    .map((f) => ({
+/**
+ * Converts GitHub's file list into rendered diffs. Files without a patch are
+ * kept (with no lines) so the viewer can say they exist but cannot be shown.
+ * `scopes[i]` says whether file `i` was sent to the reviewer.
+ */
+export function toFileDiffs(files: GitHubFilePatch[], scopes?: ReviewScope[]): FileDiff[] {
+  return files.map((f, i) => {
+    const hasPatch = typeof f.patch === "string" && f.patch.length > 0;
+    return {
       path: f.filename,
       additions: f.additions,
       deletions: f.deletions,
-      lines: parsePatch(f.patch ?? ""),
-    }));
+      lines: hasPatch ? parsePatch(f.patch!) : [],
+      scope: scopes?.[i] ?? (hasPatch ? "full" : "no-patch"),
+    };
+  });
 }

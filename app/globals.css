@@ -1,5 +1,9 @@
 @import "tailwindcss";
-@plugin "@tailwindcss/typography";
+
+@theme inline {
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system, "SF Pro Text",
+    BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
 
 :root {
   --bg-base: #0d1117;
@@ -7,14 +11,16 @@
   --bg-raised: #1c2128;
   --bg-hover: #21262d;
   --border-default: #30363d;
+  --border-accent: #58a6ff;
   --text-primary: #e6edf3;
   --text-secondary: #8b949e;
-  --text-muted: #6e7681;
+  /* ≥ 4.5:1 on --bg-panel and --bg-raised for 11px labels (WCAG AA). */
+  --text-muted: #848d97;
   --accent: #58a6ff;
   --accent-hover: #79b8ff;
   --sev-high: #ff6363;
-  --sev-medium: #D29922;
-  --sev-low: #3FB950;
+  --sev-medium: #d29922;
+  --sev-low: #3fb950;
   --diff-add-bg: #1e3a29;
   --diff-add-fg: #7ee787;
   --diff-del-bg: #490192;
@@ -29,8 +35,7 @@ body {
 body {
   background: var(--bg-base);
   color: var(--text-primary);
-  font-family: "Inter", ui-sans-serif, system-ui, -apple-system, "SF Pro Text",
-    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-family: var(--font-sans);
   font-feature-settings: "cv11", "ss01";
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
@@ -61,7 +66,7 @@ body {
   background: transparent;
 }
 
-/* Focus ring: one indigo ring, 2px, offset 1px */
+/* Focus ring: one accent ring, 2px, offset 1px */
 :focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
@@ -94,7 +99,7 @@ input, textarea, [contenteditable] {
 
 @keyframes flashSevBg {
   0% { background-color: transparent; }
-  20% { background-color: var(--flash-bg); }
+  20% { background-color: color-mix(in srgb, var(--flash-bg) 35%, transparent); }
   100% { background-color: transparent; }
 }
 .flash-sev {
@@ -116,27 +121,46 @@ input, textarea, [contenteditable] {
   }
 }
 
+/* The rail toggle only exists on narrow screens. */
+.rail-toggle {
+  display: none;
+}
 
-/* Responsive: collapse Issue Cards below diff on narrow screens */
+/* Medium screens: issue cards move below the diff. */
 @media (max-width: 900px) {
-  .code-review-workspace {
-    flex-direction: column !important;
+  .code-review-main {
+    flex-direction: column;
   }
-  .code-review-workspace > .diff-area {
-    min-height: 50vh !important;
+  .code-review-diff {
+    flex: 1 1 auto;
+    min-height: 0;
   }
-  .code-review-workspace > .issue-cards {
-    width: 100% !important;
-    border-left: none !important;
-    border-top: 1px solid var(--border-default) !important;
+  .code-review-cards {
+    width: 100%;
+    height: 40vh;
+    flex-shrink: 0;
+    border-left: 0;
+    border-top: 1px solid var(--border-default);
   }
 }
 
+/* Narrow screens: the rail becomes a drawer opened from the header. */
 @media (max-width: 600px) {
-  .code-review-rail {
-    display: none !important;
+  .rail-toggle {
+    display: inline-flex;
   }
-  .code-review-main {
-    width: 100% !important;
+  .code-review-rail {
+    position: absolute;
+    inset: 0 auto 0 0;
+    z-index: 30;
+    width: min(85vw, 300px);
+    box-shadow: 8px 0 24px rgb(0 0 0 / 0.5);
+    transform: translateX(-100%);
+    visibility: hidden;
+    transition: transform 160ms ease, visibility 160ms;
+  }
+  .code-review-rail.is-open {
+    transform: none;
+    visibility: visible;
   }
 }

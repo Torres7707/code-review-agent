@@ -1,7 +1,6 @@
-import type { FileDiff } from "@/lib/types";
 import type { PartialReview } from "@/lib/review-core";
 
-const CACHE_PREFIX = "cra:review:v1:";
+const CACHE_PREFIX = "cra:review:v2:";
 const INDEX_KEY = `${CACHE_PREFIX}__index`;
 const MAX_ENTRIES = 40;
 
@@ -12,33 +11,12 @@ export type ReviewCacheStorage = {
 };
 
 /**
- * A stable fingerprint of the rendered diff. Reviews are keyed by it, so a PR
- * that gains commits reviews again while simply navigating back to one does
- * not.
+ * Reviews are keyed by the PR's head commit SHA: GitHub already gives every
+ * version of a PR a unique id, so a new push misses the cache and navigating
+ * back to an unchanged PR hits it.
  */
-export function diffSignature(files: FileDiff[]): string {
-  let hash = 5381;
-
-  const mix = (text: string) => {
-    for (let i = 0; i < text.length; i += 1) {
-      hash = ((hash << 5) + hash + text.charCodeAt(i)) | 0;
-    }
-  };
-
-  for (const file of files) {
-    mix(
-      `${file.path}\u0000${file.additions}\u0000${file.deletions}\u0000${file.lines.length}`,
-    );
-    // A body edit can keep every count intact, so fold in the code itself.
-    mix(file.lines[0]?.content ?? "");
-    mix(file.lines[file.lines.length - 1]?.content ?? "");
-  }
-
-  return `${files.length}:${(hash >>> 0).toString(36)}`;
-}
-
-export function reviewCacheKey(prId: string, files: FileDiff[]): string {
-  return `${prId}::${diffSignature(files)}`;
+export function reviewCacheKey(prKey: string, headSha: string): string {
+  return `${prKey}@${headSha}`;
 }
 
 export type ReviewCache = {
@@ -55,9 +33,7 @@ export type ReviewCache = {
  * guarded: private mode and quota errors must not take the review UI down
  * with them.
  */
-export function createReviewCache(
-  storage?: ReviewCacheStorage | null,
-): ReviewCache {
+export function createReviewCache(storage?: ReviewCacheStorage | null): ReviewCache {
   const memory = new Map<string, PartialReview>();
 
   const readIndex = (): string[] => {

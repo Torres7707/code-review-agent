@@ -1,104 +1,102 @@
 import { Output, createTextStreamResponse, streamText } from "ai";
-import { NextResponse } from "next/server";
+import { z } from "zod";
 import { readSession } from "@/lib/github-auth";
-import { githubJson } from "@/lib/github";
-import { REVIEW_PROMPT } from "@/lib/prompt";
 import {
-  buildReviewPrompt,
-  trimPatch,
-  MAX_REVIEW_FILES,
-  type ReviewInput,
-} from "@/lib/review-core";
+  getPull,
+  githubErrorResponse,
+  isValidOwner,
+  isValidRepo,
+  listPullFiles,
+} from "@/lib/github";
+import { REVIEW_PROMPT } from "@/lib/prompt";
+import { buildReviewPrompt, planReview, type ReviewInput } from "@/lib/review-core";
 import { reviewSchema } from "@/lib/review-schema";
 
 export const maxDuration = 60;
 
-type GitHubFile = {
-  filename: string;
-  additions: number;
-  deletions: number;
-  patch?: string;
-};
+/** Written into the stream when the model fails; the client treats it as an error. */
+const REVIEW_FAILED_MARKER = "\n[review failed]";
 
-type GitHubPull = {
-  title: string;
-  number: number;
-  head: { ref: string };
-};
+// Only a PR reference is accepted. The diff is always fetched server-side
+// with the caller's own token, so the endpoint cannot be used to send
+// arbitrary text to the model.
+const bodySchema = z.object({
+  owner: z.string().refine(isValidOwner),
+  repo: z.string().refine(isValidRepo),
+  number: z.number().int().positive(),
+});
 
-// Keeps the model prompt bounded: diffs are the expensive part of the request.
-const MAX_FILES = MAX_REVIEW_FILES;
+const MAX_BODY_BYTES = 2048;
+
+function jsonError(error: string, status: number) {
+  return Response.json({ error }, { status });
+}
 
 async function loadPrInput(
   token: string,
   owner: string,
   repo: string,
   number: number,
-): Promise<ReviewInput> {
-  const pull = await githubJson<GitHubPull>(token, `/repos/${owner}/${repo}/pulls/${number}`);
-  const files = await githubJson<GitHubFile[]>(
-    token,
-    `/repos/${owner}/${repo}/pulls/${number}/files?per_page=100`,
-  );
-  if (!pull.ok || !files.ok) {
-    const status = !pull.ok ? pull.status : !files.ok ? files.status : 0;
-    throw new Error(`GitHub API error: ${status}`);
-  }
+): Promise<{ ok: true; input: ReviewInput } | { ok: false; response: Response }> {
+  const [pull, files] = await Promise.all([
+    getPull(token, owner, repo, number),
+    listPullFiles(token, owner, repo, number),
+  ]);
+  if (!pull.ok) return { ok: false, response: githubErrorResponse(pull.status) };
+  if (!files.ok) return { ok: false, response: githubErrorResponse(files.status) };
+
+  const plan = planReview(files.data);
   return {
-    pr: {
-      number: pull.data.number,
-      title: pull.data.title,
-      branch: pull.data.head.ref,
+    ok: true,
+    input: {
+      pr: { number: pull.data.number, title: pull.data.title, branch: pull.data.head.ref },
+      files: files.data.flatMap((f, i) => {
+        const patch = plan[i]?.patch;
+        return patch
+          ? [{ path: f.filename, additions: f.additions, deletions: f.deletions, patch }]
+          : [];
+      }),
     },
-    files: files.data.slice(0, MAX_FILES).map((f) => ({
-      path: f.filename,
-      additions: f.additions,
-      deletions: f.deletions,
-      patch: trimPatch(f.patch),
-    })),
   };
 }
 
 export async function POST(req: Request) {
-  let body: ReviewInput & { owner?: string; repo?: string };
-  try {
-    body = (await req.json()) as ReviewInput & { owner?: string; repo?: string };
-  } catch {
-    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
-  }
+  const token = await readSession(req);
+  if (!token) return jsonError("unauthorized", 401);
 
-  // When owner/repo/number are supplied, fetch the real diff from GitHub
-  // instead of trusting client-provided patch text.
-  if (body.owner && body.repo && body.pr?.number !== undefined) {
-    const token = await readSession(req);
-    if (!token) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-    try {
-      body = await loadPrInput(token, body.owner, body.repo, body.pr.number);
-    } catch (error) {
-      console.error(error);
-      return NextResponse.json({ error: "Failed to load PR from GitHub" }, { status: 502 });
-    }
+  const raw = await req.text();
+  if (raw.length > MAX_BODY_BYTES) return jsonError("Request body too large", 413);
+
+  let json: unknown;
+  try {
+    json = JSON.parse(raw);
+  } catch {
+    return jsonError("Invalid JSON body", 400);
   }
+  const body = bodySchema.safeParse(json);
+  if (!body.success) return jsonError("Expected { owner, repo, number }", 400);
 
   if (!process.env.AI_GATEWAY_API_KEY) {
-    return NextResponse.json(
-      { error: "AI_GATEWAY_API_KEY is not configured" },
-      { status: 500 },
-    );
+    return jsonError("AI_GATEWAY_API_KEY is not configured", 500);
   }
+
+  const loaded = await loadPrInput(token, body.data.owner, body.data.repo, body.data.number);
+  if (!loaded.ok) return loaded.response;
 
   try {
     const result = streamText({
       model: process.env.AI_MODEL ?? "openai/gpt-5-mini",
       instructions: REVIEW_PROMPT,
-      prompt: buildReviewPrompt(body),
+      prompt: buildReviewPrompt(loaded.input),
       abortSignal: req.signal,
       output: Output.object({ schema: reviewSchema }),
     });
 
     // `toTextStreamResponse` drops error parts, so a rejected schema or an
-    // upstream 500 closes the body with no bytes and the client reads it as
-    // "no issues found". Surface the failure in the text stream instead.
+    // upstream 500 would close the body with no bytes and the client would
+    // read it as "no issues found". Append a marker instead; it makes the
+    // final JSON invalid, which the client reports as a failed review. The
+    // upstream error details stay in the server log.
     const text = result.fullStream.pipeThrough(
       new TransformStream({
         transform(part, controller) {
@@ -106,9 +104,7 @@ export async function POST(req: Request) {
             controller.enqueue(part.text);
           } else if (part.type === "error") {
             console.error("Review stream failed:", part.error);
-            controller.enqueue(
-              `\n[review failed] ${part.error instanceof Error ? part.error.message : String(part.error)}`,
-            );
+            controller.enqueue(REVIEW_FAILED_MARKER);
           }
         },
       }),
@@ -117,6 +113,6 @@ export async function POST(req: Request) {
     return createTextStreamResponse({ stream: text });
   } catch (error) {
     console.error(error);
-    return NextResponse.json({ error: "Review failed" }, { status: 500 });
+    return jsonError("Review failed", 500);
   }
 }

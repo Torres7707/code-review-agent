@@ -9,7 +9,7 @@ colors:
   border-default: "#30363d"
   text-primary: "#e6edf3"
   text-secondary: "#8b949e"
-  text-muted: "#6e7681"
+  text-muted: "#848d97"
   accent: "#58a6ff"
   accent-hover: "#79b8ff"
   accent-deep: "#1f6feb"
@@ -184,7 +184,7 @@ The palette is the canon GitHub dark shell plus exactly three severity grades. I
 - **Graphite Line** (#30363d): every 1px structural border, divider, the scrollbar thumb. Scrollbar thumb hover: #484f58.
 - **Frost White** (#e6edf3): primary text everywhere.
 - **Muted Slate** (#8b949e): secondary text — PR rows, body copy, chrome labels.
-- **Haze Gray** (#6e7681): hint text, timestamps, section eyebrows, ghost line numbers.
+- **Haze Gray** (#848d97): hint text, timestamps, section eyebrows, ghost line numbers. Raised from #6e7681 so 11px labels reach 4.5:1 on the panel and raised surfaces (WCAG AA).
 - **Button Charcoal** (#24292f / hover **#2f363d**): the GitHub-gray primary action surface (the AuthGate sign-in button).
 
 ### Severity (issue grade only)
@@ -194,7 +194,7 @@ The palette is the canon GitHub dark shell plus exactly three severity grades. I
 
 ### Diff
 - **Add Green Wash** (#1e3a29) with **Bright Green** (#7ee787) text: added lines.
-- **Delete Purple Wash** (#490192) with **Salmon Pink** (#ffa198) text: deleted lines. The diff component inlines the same shade as #490194.
+- **Delete Purple Wash** (#490192) with **Salmon Pink** (#ffa198) text: deleted lines. The diff component reads it from `--diff-del-bg`.
 
 ### Named Rules
 **The One Accent Rule.** One indigo, and only one: #58a6ff picks the active row, the PR number, the focus ring, and the View-fix link. Nothing else in the system is blue, and no second accent may be introduced.

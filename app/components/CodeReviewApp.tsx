@@ -5,201 +5,270 @@ import { AuthGate } from "@/app/components/AuthGate";
 import { DiffView } from "@/app/components/DiffView";
 import { Header } from "@/app/components/Header";
 import { IssueCards } from "@/app/components/IssueCards";
+import { PRHeader } from "@/app/components/PRHeader";
 import { RepoRail } from "@/app/components/RepoRail";
+import { getJson, type ApiResult, type Load } from "@/lib/api-client";
+import {
+  anchorReviewLines,
+  annotateDiffWithIssues,
+  countBySeverity,
+  reviewCoverage,
+} from "@/lib/review-core";
+import { reviewCache, reviewCacheKey } from "@/lib/review-cache";
+import { canRunReview } from "@/lib/review-status";
 import { useReview } from "@/lib/use-review";
-import { annotateDiffWithIssues } from "@/lib/review-core";
-import type { FileDiff, GitHubUser, PR, Repo } from "@/lib/types";
+import type { FileDiff, GitHubUser, PR, PRDetail, Repo, Severity } from "@/lib/types";
 
-async function getJson<T>(url: string): Promise<T | null> {
-  const res = await fetch(url);
-  if (!res.ok) return null;
-  return (await res.json()) as T;
+type DiffPayload = { pr: PRDetail; files: FileDiff[] };
+
+const AUTH_ERRORS: Record<string, string> = {
+  state: "Sign-in was interrupted or expired. Please try again.",
+  exchange: "GitHub did not complete the sign-in. Please try again.",
+};
+
+function repoKeyOf(repo: Repo): string {
+  return `${repo.owner}/${repo.name}`;
+}
+
+function toLoad<T>(result: ApiResult<T>): Load<T> {
+  return result.ok ? { status: "ok", data: result.data } : { status: "error", message: result.message };
 }
 
 export function CodeReviewApp() {
   const [user, setUser] = useState<GitHubUser | null | "loading">("loading");
-  const [repos, setRepos] = useState<Repo[]>([]);
-  const [prs, setPrs] = useState<PR[]>([]);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [repos, setRepos] = useState<Load<Repo[]>>({ status: "loading" });
   const [activeRepoId, setActiveRepoId] = useState<string | null>(null);
-  const [activePrId, setActivePrId] = useState<string | null>(null);
+  const [prs, setPrs] = useState<{ repoKey: string; load: Load<PR[]> } | null>(null);
+  const [activePrNumber, setActivePrNumber] = useState<number | null>(null);
+  const [diff, setDiff] = useState<{ prKey: string; load: Load<DiffPayload> } | null>(null);
   const [activeIssueId, setActiveIssueId] = useState<string | null>(null);
-  const [fileDiffsByKey, setFileDiffsByKey] = useState<{
-    key: string | null;
-    files: FileDiff[];
-  }>({ key: null, files: [] });
-  const [reviewedPrId, setReviewedPrId] = useState<string | null>(null);
-  const [reviewedPrKey, setReviewedPrKey] = useState<string | null>(null);
+  const [severityFilter, setSeverityFilter] = useState<Severity | null>(null);
+  const [railOpen, setRailOpen] = useState(false);
+
+  // What the user most recently picked. Responses for anything else are
+  // stale and dropped. Only read and written in event handlers and callbacks.
+  const currentRepoKey = useRef<string | null>(null);
+  const currentPrKey = useRef<string | null>(null);
 
   const activeRepo = useMemo(
-    () => repos.find((r) => r.id === activeRepoId) ?? null,
+    () => (repos.status === "ok" ? (repos.data.find((r) => r.id === activeRepoId) ?? null) : null),
     [repos, activeRepoId],
   );
-  const activePr = useMemo(
-    () => prs.find((p) => p.id === activePrId) ?? null,
-    [prs, activePrId],
-  );
+  const repoKey = activeRepo ? repoKeyOf(activeRepo) : null;
+  const prList = prs && prs.repoKey === repoKey ? prs.load : null;
+  const activePr =
+    prList?.status === "ok" ? (prList.data.find((p) => p.number === activePrNumber) ?? null) : null;
+  const prKey = repoKey && activePr ? `${repoKey}#${activePr.number}` : null;
+  const diffLoad: Load<DiffPayload> | null = diff && diff.prKey === prKey ? diff.load : null;
+  const loaded = diffLoad?.status === "ok" ? diffLoad.data : null;
+  const files = useMemo(() => loaded?.files ?? [], [loaded]);
+  const reviewKey = prKey && loaded ? reviewCacheKey(prKey, loaded.pr.headSha) : null;
 
-  const prKey =
-    activeRepo && activePr
-      ? `${activeRepo.owner}/${activeRepo.name}#${activePr.number}`
-      : null;
-  const fileDiffs = useMemo(
-    () => (prKey !== null && fileDiffsByKey.key === prKey ? fileDiffsByKey.files : []),
-    [prKey, fileDiffsByKey],
-  );
-  const diffsLoading = prKey !== null && fileDiffsByKey.key !== prKey;
-
-  const {
-    issues,
-    submit,
-    isLoading: reviewLoading,
-    error: reviewError,
-    stop,
-  } = useReview(reviewedPrId, fileDiffs, reviewedPrKey);
-
-  // The raw diff has no issue ids; stamp them on so both directions of the
-  // highlight can find the same line.
-  const annotatedDiffs = useMemo(
-    () => annotateDiffWithIssues(fileDiffs, issues),
-    [fileDiffs, issues],
-  );
-
-  // Clicking a card scrolls its line into view in the diff column.
-  useEffect(() => {
-    if (!activeIssueId) return;
-    const line = document.querySelector(
-      `[data-issue-id="${CSS.escape(activeIssueId)}"]`,
-    );
-    if (line) {
-      line.scrollIntoView({ block: "center", behavior: "smooth" });
-      return;
-    }
-    // No line in the diff maps to this issue (e.g. the file was skipped):
-    // scroll the file header into view instead of failing silently.
-    const issue = issues.find((i) => i.id === activeIssueId);
-    if (!issue) return;
-    const header = document.querySelector(
-      `[data-file-path="${CSS.escape(issue.file)}"]`,
-    );
-    header?.scrollIntoView({ block: "start", behavior: "smooth" });
-  }, [activeIssueId, issues]);
-
-  // Latest submit without making it an effect dependency (see the review effect).
-  const submitRef = useRef(submit);
-  useEffect(() => {
-    submitRef.current = submit;
-  }, [submit]);
-
-  useEffect(() => {
-    let cancelled = false;
-    fetch("/api/me")
-      .then((r) => r.json())
-      .then((d: { user: GitHubUser | null }) => {
-        if (!cancelled) setUser(d.user);
-      })
-      .catch(() => {
-        if (!cancelled) setUser(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!user || user === "loading") return;
-    let cancelled = false;
-    getJson<{ repos: Repo[] }>("/api/repos").then((d) => {
-      if (!cancelled) setRepos(d?.repos ?? []);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [user]);
-
-  useEffect(() => {
-    if (!activeRepo) return;
-    let cancelled = false;
-    getJson<{ prs: PR[] }>(
-      `/api/repos/${activeRepo.owner}/${activeRepo.name}/prs`,
-    ).then((d) => {
-      if (!cancelled) setPrs(d?.prs ?? []);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [activeRepo]);
-
-  useEffect(() => {
-    if (!activeRepo || !activePr || prKey === null) return;
-    let cancelled = false;
-    getJson<{ diffs: FileDiff[] }>(
-      `/api/repos/${activeRepo.owner}/${activeRepo.name}/prs/${activePr.number}/diff`,
-    )
-      .then((d) => {
-        if (!cancelled) {
-          setFileDiffsByKey({ key: prKey, files: d?.diffs ?? [] });
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setFileDiffsByKey({ key: prKey, files: [] });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [activeRepo, activePr, prKey]);
-
-  // Kick off exactly one review per PR; the PR key is the only trigger so a
-  // changing `submit` identity cannot re-run the request.
-  useEffect(() => {
-    if (!activeRepo || !activePr || prKey === null || diffsLoading) return;
-    submitRef.current({
-      owner: activeRepo.owner,
-      repo: activeRepo.name,
-      pr: {
-        number: activePr.number,
-        title: activePr.title,
-        branch: activePr.branch,
-      },
-    });
-  }, [activeRepo, activePr, prKey, diffsLoading]);
-
-  const onPickRepo = useCallback((id: string) => {
-    setActiveRepoId(id);
-    setActivePrId(null);
-    setReviewedPrId(null);
-    setReviewedPrKey(null);
+  const resetSession = useCallback(() => {
+    currentRepoKey.current = null;
+    currentPrKey.current = null;
+    setUser(null);
+    setRepos({ status: "loading" });
+    setActiveRepoId(null);
+    setPrs(null);
+    setActivePrNumber(null);
+    setDiff(null);
     setActiveIssueId(null);
   }, []);
 
-  // Key by repo as well as number: `pr-1` exists in many repos.
-  const onPickPR = useCallback(
-    (target: PR) => {
-      const repo = repos.find((r) => r.id === activeRepoId);
-      const namespace = repo ? `${repo.owner}/${repo.name}` : "";
-      setActivePrId(target.id);
-      setReviewedPrId(target.id);
-      setReviewedPrKey(`${namespace}#${target.number}`);
-      setActiveIssueId(null);
+  const review = useReview(reviewKey, { onUnauthorized: resetSession });
+  const { start: startReview, cancel: cancelReview } = review;
+
+  /** Turns a 401 from any of our endpoints into "signed out". */
+  const handleResult = useCallback(
+    <T,>(result: ApiResult<T>): Load<T> => {
+      if (!result.ok && result.status === 401) resetSession();
+      return toLoad(result);
     },
-    [repos, activeRepoId],
+    [resetSession],
+  );
+
+  const issues = useMemo(
+    () => anchorReviewLines(review.review, files, reviewKey ?? "review"),
+    [review.review, files, reviewKey],
+  );
+  const annotatedFiles = useMemo(() => annotateDiffWithIssues(files, issues), [files, issues]);
+  const counts = useMemo(() => countBySeverity(issues), [issues]);
+  const coverage = useMemo(() => reviewCoverage(files), [files]);
+  const visibleIssues = useMemo(
+    () => (severityFilter ? issues.filter((i) => i.severity === severityFilter) : issues),
+    [issues, severityFilter],
+  );
+
+  const loadRepos = useCallback(() => {
+    setRepos({ status: "loading" });
+    void getJson<{ repos: Repo[] }>("/api/repos").then((result) => {
+      const load = handleResult(result);
+      setRepos(load.status === "ok" ? { status: "ok", data: load.data.repos } : load);
+    });
+  }, [handleResult]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getJson<{ user: GitHubUser | null }>("/api/me").then((result) => {
+      if (cancelled) return;
+      const params = new URLSearchParams(window.location.search);
+      const code = params.get("auth_error");
+      if (code) {
+        setAuthError(AUTH_ERRORS[code] ?? AUTH_ERRORS.exchange!);
+        window.history.replaceState(null, "", window.location.pathname);
+      }
+      const signedIn = result.ok ? result.data.user : null;
+      setUser(signedIn);
+      if (signedIn) loadRepos();
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [loadRepos]);
+
+  const loadPrs = useCallback(
+    (repo: Repo) => {
+      const key = repoKeyOf(repo);
+      setPrs({ repoKey: key, load: { status: "loading" } });
+      void getJson<{ prs: PR[] }>(
+        `/api/repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}/prs`,
+      ).then((result) => {
+        if (currentRepoKey.current !== key) return;
+        const load = handleResult(result);
+        setPrs({ repoKey: key, load: load.status === "ok" ? { status: "ok", data: load.data.prs } : load });
+      });
+    },
+    [handleResult],
+  );
+
+  const loadDiff = useCallback(
+    (repo: Repo, pr: PR) => {
+      const key = `${repoKeyOf(repo)}#${pr.number}`;
+      setDiff({ prKey: key, load: { status: "loading" } });
+      void getJson<DiffPayload>(
+        `/api/repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}/prs/${pr.number}/diff`,
+      ).then((result) => {
+        if (currentPrKey.current !== key) return;
+        const load = handleResult(result);
+        setDiff({ prKey: key, load });
+        // Review automatically once the diff is in (served from cache when
+        // this head commit was already reviewed).
+        if (load.status === "ok") {
+          startReview(reviewCacheKey(key, load.data.pr.headSha), {
+            owner: repo.owner,
+            repo: repo.name,
+            number: pr.number,
+          });
+        }
+      });
+    },
+    [handleResult, startReview],
+  );
+
+  const onPickRepo = useCallback(
+    (repo: Repo) => {
+      cancelReview();
+      currentRepoKey.current = repoKeyOf(repo);
+      currentPrKey.current = null;
+      setActiveRepoId(repo.id);
+      setActivePrNumber(null);
+      setDiff(null);
+      setActiveIssueId(null);
+      setSeverityFilter(null);
+      loadPrs(repo);
+    },
+    [cancelReview, loadPrs],
+  );
+
+  const onPickPR = useCallback(
+    (pr: PR) => {
+      if (!activeRepo) return;
+      const key = `${repoKeyOf(activeRepo)}#${pr.number}`;
+      setRailOpen(false);
+      if (currentPrKey.current === key && diffLoad?.status !== "error") return;
+      cancelReview();
+      currentPrKey.current = key;
+      setActivePrNumber(pr.number);
+      setActiveIssueId(null);
+      setSeverityFilter(null);
+      loadDiff(activeRepo, pr);
+    },
+    [activeRepo, cancelReview, diffLoad, loadDiff],
+  );
+
+  const runReview = useCallback(() => {
+    if (!activeRepo || !activePr || !reviewKey) return;
+    setActiveIssueId(null);
+    startReview(
+      reviewKey,
+      { owner: activeRepo.owner, repo: activeRepo.name, number: activePr.number },
+      true,
+    );
+  }, [activeRepo, activePr, reviewKey, startReview]);
+
+  const retryDiff = useCallback(() => {
+    if (activeRepo && activePr) loadDiff(activeRepo, activePr);
+  }, [activeRepo, activePr, loadDiff]);
+
+  const retryPrs = useCallback(() => {
+    if (activeRepo) loadPrs(activeRepo);
+  }, [activeRepo, loadPrs]);
+
+  // Clicking a card scrolls its line into view in the diff column. This runs
+  // in the event handler, not an effect, so streaming updates never yank the
+  // scroll position while the user is reading.
+  const onPickIssue = useCallback(
+    (id: string) => {
+      const next = activeIssueId === id ? null : id;
+      setActiveIssueId(next);
+      if (!next) return;
+      const line = document.querySelector(`[data-issue-id="${CSS.escape(next)}"]`);
+      if (line) {
+        line.scrollIntoView({ block: "center", behavior: "smooth" });
+        return;
+      }
+      // No rendered line maps to this issue: show the file header instead.
+      const issue = issues.find((i) => i.id === next);
+      if (!issue) return;
+      document
+        .querySelector(`[data-file-path="${CSS.escape(issue.file)}"]`)
+        ?.scrollIntoView({ block: "start", behavior: "smooth" });
+    },
+    [activeIssueId, issues],
+  );
+
+  const onLineClick = useCallback(
+    (id: string) => {
+      setActiveIssueId(id);
+      const issue = issues.find((i) => i.id === id);
+      if (issue && severityFilter && issue.severity !== severityFilter) setSeverityFilter(null);
+      // Wait a frame so a card hidden by the filter is rendered before scrolling.
+      requestAnimationFrame(() => {
+        document
+          .querySelector(`[data-card-id="${CSS.escape(id)}"]`)
+          ?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      });
+    },
+    [issues, severityFilter],
   );
 
   const signOut = useCallback(() => {
-    fetch("/api/auth/signout", { method: "POST" }).then(() => {
-      setUser(null);
-      setRepos([]);
-      setPrs([]);
-      setActiveRepoId(null);
-      setActivePrId(null);
-      setActiveIssueId(null);
-    });
-  }, []);
+    cancelReview();
+    // Cached reviews describe private code; do not leave them in sessionStorage.
+    reviewCache.clear();
+    void fetch("/api/auth/signout", { method: "POST" }).finally(resetSession);
+  }, [cancelReview, resetSession]);
 
   if (user === "loading") {
     return (
       <>
         <Header user={null} />
-        <div className="flex h-[calc(100vh-3rem)] items-center justify-center bg-[var(--bg-base)] text-[13px] text-[var(--text-muted)]">
+        <div
+          role="status"
+          className="flex h-[calc(100vh-3rem)] items-center justify-center bg-[var(--bg-base)] text-[13px] text-[var(--text-muted)]"
+        >
           Loading…
         </div>
       </>
@@ -210,128 +279,77 @@ export function CodeReviewApp() {
     return (
       <>
         <Header user={null} />
-        <AuthGate
-          onSignIn={() => {
-            window.location.href = "/api/auth/github";
-          }}
-        />
+        <AuthGate error={authError} />
       </>
     );
   }
 
-  const isStreaming = reviewLoading;
-  const hasIssues = issues.length > 0;
+  const diffMessage = !activeRepo
+    ? "Pick a repository from the left rail."
+    : !activePr
+      ? "Pick a pull request to see its diff."
+      : loaded && files.length === 0
+        ? "This pull request has no file changes."
+        : "";
 
   return (
     <div className="code-review-workspace flex h-screen flex-col bg-[var(--bg-base)]">
       <Header
         user={{ login: user.login, avatar: user.avatar_url }}
         onSignOut={signOut}
+        railOpen={railOpen}
+        onToggleRail={() => setRailOpen((v) => !v)}
       />
-      <div className="flex min-h-0 flex-1">
+      <div className="code-review-body relative flex min-h-0 flex-1">
         <RepoRail
+          open={railOpen}
           repos={repos}
           activeRepoId={activeRepoId}
-          prs={prs}
-          activePrId={activePrId}
+          prs={prList}
+          activePrNumber={activePrNumber}
           onPickRepo={onPickRepo}
           onPickPR={onPickPR}
+          onRetryRepos={loadRepos}
+          onRetryPrs={retryPrs}
         />
         <main className="code-review-main flex min-w-0 flex-1">
-          <section className="flex h-full min-w-0 flex-1 flex-col border-r border-[var(--border-default)]">
+          <section
+            aria-label="Pull request diff"
+            className="code-review-diff flex h-full min-w-0 flex-1 flex-col"
+          >
             <PRHeader
               pr={activePr}
-              isStreaming={isStreaming}
-              hasIssues={hasIssues}
-              onStop={stop}
+              detail={loaded?.pr ?? null}
+              status={review.status}
+              canRun={canRunReview(review.status)}
+              onRun={runReview}
+              onStop={review.stop}
             />
             <DiffView
-              files={annotatedDiffs}
+              files={annotatedFiles}
               activeIssueId={activeIssueId}
-              onLineClick={(id) => setActiveIssueId(id)}
-              loading={diffsLoading}
-              emptyMessage={
-                activeRepo && !activePr
-                  ? "Pick a pull request from the left rail to see its diff."
-                  : "Pick a PR from the left rail to see its diff."
-              }
+              onLineClick={onLineClick}
+              loading={diffLoad?.status === "loading"}
+              error={diffLoad?.status === "error" ? diffLoad.message : null}
+              onRetry={retryDiff}
+              emptyMessage={diffMessage}
             />
           </section>
           <IssueCards
-            issues={issues}
-            streamedIds={issues.map((i) => i.id)}
+            issues={visibleIssues}
+            counts={counts}
+            totalIssues={issues.length}
+            status={review.status}
+            errorMessage={review.error}
+            summary={review.review?.summary}
+            coverage={loaded ? coverage : null}
             activeId={activeIssueId}
-            isStreaming={isStreaming}
-            errorMessage={reviewError?.message}
-            onPick={(id) => setActiveIssueId((prev) => (prev === id ? null : id))}
+            severityFilter={severityFilter}
+            onFilter={setSeverityFilter}
+            onPick={onPickIssue}
+            onRetry={canRunReview(review.status) ? runReview : undefined}
           />
         </main>
-      </div>
-    </div>
-  );
-}
-
-function PRHeader({
-  pr,
-  isStreaming,
-  hasIssues,
-  onStop,
-}: {
-  pr: PR | null;
-  isStreaming: boolean;
-  hasIssues: boolean;
-  onStop: () => void;
-}) {
-  if (!pr) {
-    return (
-      <div className="shrink-0 border-b border-[var(--border-default)] bg-[var(--bg-panel)] px-4 py-2.5 text-[12px] text-[var(--text-muted)]">
-        No pull request selected
-      </div>
-    );
-  }
-
-  const status = isStreaming
-    ? { label: "Reviewing", tone: "bg-[var(--accent)]/15 text-[var(--accent)]" }
-    : hasIssues
-      ? { label: "Finished", tone: "bg-[var(--sev-low)]/15 text-[var(--sev-low)]" }
-      : { label: "No issues", tone: "bg-[var(--bg-raised)] text-[var(--text-muted)]" };
-
-  return (
-    <div className="shrink-0 border-b border-[var(--border-default)] bg-[var(--bg-panel)] px-4 py-2.5">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2 text-[13px] font-medium">
-            <span className="font-mono text-[var(--accent)]">#{pr.number}</span>
-            <span className="truncate">{pr.title}</span>
-            <span className="hidden text-[11px] text-[var(--text-muted)] sm:inline">
-              · {pr.branch}
-            </span>
-          </div>
-          {pr.additions !== undefined ? (
-            <div className="mt-0.5 tabnum text-[11px] text-[var(--text-muted)]">
-              <span className="text-[#7ee787]">+{pr.additions}</span>{" "}
-              <span className="text-[#ffa198]">-{pr.deletions}</span>
-            </div>
-          ) : null}
-        </div>
-
-        <div className="flex flex-shrink-0 items-center gap-2">
-          {isStreaming ? (
-            <button
-              type="button"
-              onClick={onStop}
-              className="rounded-md border border-[var(--border-default)] px-2.5 py-1 text-[11px] text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-raised)] hover:text-[var(--text-primary)]"
-            >
-              Stop
-            </button>
-          ) : null}
-          <span
-            className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] ${status.tone}`}
-          >
-            <span className="h-1.5 w-1.5 rounded-full bg-current" />
-            {status.label}
-          </span>
-        </div>
       </div>
     </div>
   );

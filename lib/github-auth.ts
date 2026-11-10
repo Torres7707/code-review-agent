@@ -1,10 +1,19 @@
-export const GITHUB_CLIENT_ID = process.env.GITHUB_CLIENT_ID ?? "";
-export const GITHUB_CLIENT_SECRET = process.env.GITHUB_CLIENT_SECRET ?? "";
-
-// Session cookie: a signed (HMAC) bearer of the GitHub access token.
-// Single-user local tool — no DB, just tamper-proof cookie storage.
+// Session cookie: the GitHub access token, encrypted with AES-GCM.
+// Single-user tool, no database: the cookie is the session store. Encryption
+// keeps the token unreadable if the cookie leaks (logs, a copied header, a
+// shared machine); GCM's authentication tag also rejects any tampering.
 export const SESSION_COOKIE = "cra_session";
 export const OAUTH_STATE_COOKIE = "cra_oauth_state";
+
+const SESSION_VERSION = "v1";
+
+export function githubClientId(): string {
+  return process.env.GITHUB_CLIENT_ID ?? "";
+}
+
+export function githubClientSecret(): string {
+  return process.env.GITHUB_CLIENT_SECRET ?? "";
+}
 
 export function getGitHubRedirectUri(req: Request): string {
   const url = new URL(req.url);
@@ -16,8 +25,8 @@ function secureSuffix(): string {
   return process.env.NODE_ENV === "production" ? "; Secure" : "";
 }
 
-export function sessionCookieHeader(signedToken: string, maxAge = 2592000): string {
-  return `${SESSION_COOKIE}=${signedToken}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secureSuffix()}`;
+export function sessionCookieHeader(sealedToken: string, maxAge = 2592000): string {
+  return `${SESSION_COOKIE}=${sealedToken}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secureSuffix()}`;
 }
 
 export function clearSessionCookieHeader(): string {
@@ -32,51 +41,96 @@ export function clearStateCookieHeader(): string {
   return `${OAUTH_STATE_COOKIE}=; Path=/api/auth; HttpOnly; SameSite=Lax; Max-Age=0${secureSuffix()}`;
 }
 
-function readCookie(req: Request, name: string): string | null {
+export function readCookie(req: Request, name: string): string | null {
   const cookie = req.headers.get("cookie") ?? "";
-  const match = cookie.match(new RegExp(`(?:^|;\\s*)${name}=([^;]+)`));
-  return match ? match[1] : null;
+  for (const part of cookie.split(";")) {
+    const eq = part.indexOf("=");
+    if (eq === -1) continue;
+    if (part.slice(0, eq).trim() === name) return part.slice(eq + 1).trim() || null;
+  }
+  return null;
 }
 
+/**
+ * SESSION_SECRET is required in production so the cookie key can be rotated
+ * independently of the OAuth client secret. Local development falls back to
+ * the client secret to keep setup short.
+ */
 function secret(): string {
-  const s = process.env.SESSION_SECRET || GITHUB_CLIENT_SECRET;
-  if (!s) throw new Error("SESSION_SECRET or GITHUB_CLIENT_SECRET must be set");
-  return s;
+  const dedicated = process.env.SESSION_SECRET;
+  if (dedicated) return dedicated;
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("SESSION_SECRET must be set in production");
+  }
+  const fallback = githubClientSecret();
+  if (!fallback) throw new Error("SESSION_SECRET or GITHUB_CLIENT_SECRET must be set");
+  return fallback;
 }
 
-async function hmacHex(value: string): Promise<string> {
-  const key = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(secret()),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
+async function sessionKey(): Promise<CryptoKey> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(secret()));
+  return crypto.subtle.importKey("raw", digest, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
+}
+
+/** Encrypts the access token into a cookie-safe string. */
+export async function sealSession(token: string): Promise<string> {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ciphertext = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv },
+    await sessionKey(),
+    new TextEncoder().encode(token),
   );
-  const mac = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(value));
-  return [...new Uint8Array(mac)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  return [
+    SESSION_VERSION,
+    Buffer.from(iv).toString("base64url"),
+    Buffer.from(ciphertext).toString("base64url"),
+  ].join(".");
 }
 
-function timingSafeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i += 1) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return diff === 0;
-}
-
-export async function signSession(token: string): Promise<string> {
-  return `${Buffer.from(token).toString("base64url")}.${await hmacHex(token)}`;
-}
-
+/** Returns the access token from the session cookie, or null if absent or invalid. */
 export async function readSession(req: Request): Promise<string | null> {
   const value = readCookie(req, SESSION_COOKIE);
   if (!value) return null;
-  const sep = value.lastIndexOf(".");
-  if (sep <= 0) return null;
-  const payload = value.slice(0, sep);
-  const mac = value.slice(sep + 1);
-  const token = Buffer.from(payload, "base64url").toString();
-  if (!token || !mac || !timingSafeEqual(mac, await hmacHex(token))) return null;
-  return token;
+  const [version, ivPart, dataPart, ...rest] = value.split(".");
+  if (version !== SESSION_VERSION || !ivPart || !dataPart || rest.length > 0) return null;
+
+  const key = await sessionKey();
+  try {
+    const plaintext = await crypto.subtle.decrypt(
+      { name: "AES-GCM", iv: Buffer.from(ivPart, "base64url") },
+      key,
+      Buffer.from(dataPart, "base64url"),
+    );
+    const token = new TextDecoder().decode(plaintext);
+    return token || null;
+  } catch {
+    // Wrong key, tampered value, or an old-format cookie.
+    return null;
+  }
 }
 
-export { readCookie };
+/**
+ * Revokes the token at GitHub so signing out actually ends access, not just
+ * the local cookie. Best effort: a failure here must not block sign-out.
+ */
+export async function revokeGitHubToken(token: string): Promise<void> {
+  const clientId = githubClientId();
+  const clientSecret = githubClientSecret();
+  if (!clientId || !clientSecret) return;
+  try {
+    const res = await fetch(`https://api.github.com/applications/${encodeURIComponent(clientId)}/token`, {
+      method: "DELETE",
+      headers: {
+        Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}`,
+        Accept: "application/vnd.github+json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ access_token: token }),
+    });
+    if (!res.ok && res.status !== 404) {
+      console.error("GitHub token revocation failed:", res.status);
+    }
+  } catch (error) {
+    console.error("GitHub token revocation failed:", error);
+  }
+}

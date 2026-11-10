@@ -1,26 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   createReviewCache,
-  diffSignature,
   reviewCacheKey,
   type ReviewCacheStorage,
 } from "@/lib/review-cache";
-import type { FileDiff } from "@/lib/types";
-
-function file(path: string, contents: string[]): FileDiff {
-  return {
-    path,
-    additions: contents.length,
-    deletions: 0,
-    lines: contents.map((content, idx) => ({
-      type: "add" as const,
-      newNo: idx + 1,
-      content,
-      severity: null,
-      issueId: null,
-    })),
-  };
-}
 
 function memoryStorage(): ReviewCacheStorage {
   const map = new Map<string, string>();
@@ -37,50 +20,18 @@ function memoryStorage(): ReviewCacheStorage {
 
 const REVIEW = { summary: "s", issues: [{ title: "t" }] };
 
-describe("diffSignature", () => {
-  it("is stable for the same diff", () => {
-    const a = [file("a.ts", ["1", "2"])];
-    const b = [file("a.ts", ["1", "2"])];
-
-    expect(diffSignature(a)).toBe(diffSignature(b));
-  });
-
-  it("changes when a file path changes", () => {
-    expect(diffSignature([file("a.ts", ["1"])])).not.toBe(
-      diffSignature([file("b.ts", ["1"])]),
-    );
-  });
-
-  it("changes when the first or last line changes", () => {
-    const base = diffSignature([file("a.ts", ["1", "2", "3"])]);
-
-    expect(diffSignature([file("a.ts", ["9", "2", "3"])])).not.toBe(base);
-    expect(diffSignature([file("a.ts", ["1", "2", "9"])])).not.toBe(base);
-  });
-
-  it("changes when the line count changes", () => {
-    expect(diffSignature([file("a.ts", ["1"])])).not.toBe(
-      diffSignature([file("a.ts", ["1", "2"])]),
-    );
-  });
-
-  it("distinguishes files whose parts collide when concatenated", () => {
-    expect(diffSignature([file("a", ["1"]), file("bc", ["2"])])).not.toBe(
-      diffSignature([file("ab", ["1"]), file("c", ["2"])]),
-    );
-  });
-
-  it("handles an empty diff", () => {
-    expect(diffSignature([])).toBe("0:45h");
-  });
-});
-
 describe("reviewCacheKey", () => {
-  it("namespaces the signature by PR", () => {
-    const files = [file("a.ts", ["1"])];
+  it("separates PRs and head commits", () => {
+    expect(reviewCacheKey("a/b#1", "sha1")).toBe(reviewCacheKey("a/b#1", "sha1"));
+    expect(reviewCacheKey("a/b#1", "sha1")).not.toBe(reviewCacheKey("a/b#2", "sha1"));
+    expect(reviewCacheKey("a/b#1", "sha1")).not.toBe(reviewCacheKey("a/c#1", "sha1"));
+  });
 
-    expect(reviewCacheKey("pr-1", files)).not.toBe(reviewCacheKey("pr-2", files));
-    expect(reviewCacheKey("pr-1", files)).toBe(reviewCacheKey("pr-1", files));
+  it("misses the cache after a new push to the same PR", () => {
+    const cache = createReviewCache(undefined);
+    cache.set(reviewCacheKey("a/b#1", "old"), REVIEW);
+
+    expect(cache.get(reviewCacheKey("a/b#1", "new"))).toBeUndefined();
   });
 });
 

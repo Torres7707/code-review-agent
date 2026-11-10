@@ -13,6 +13,7 @@ describe("parsePatch", () => {
     ].join("\n");
 
     expect(parsePatch(patch)).toEqual([
+      { type: "hunk", content: "@@ -10,3 +10,4 @@ function useThing() {", severity: null, issueId: null },
       { type: "context", oldNo: 10, newNo: 10, content: "const a = 1;", severity: null, issueId: null },
       { type: "del", oldNo: 11, content: "const b = 2;", severity: null, issueId: null },
       { type: "add", newNo: 11, content: "const b = 3;", severity: null, issueId: null },
@@ -31,9 +32,17 @@ describe("parsePatch", () => {
       " later",
     ].join("\n");
 
-    const lines = parsePatch(patch);
+    const lines = parsePatch(patch).filter((l) => l.type !== "hunk");
     expect(lines.map((l) => l.content)).toEqual(["first", "gone", "kept", "later"]);
     expect(lines[3]).toMatchObject({ type: "context", oldNo: 40, newNo: 40 });
+  });
+
+  it("keeps each hunk header as a separator row", () => {
+    const patch = ["@@ -1,1 +1,1 @@", " a", "@@ -40,1 +40,1 @@", " b"].join("\n");
+    expect(parsePatch(patch).filter((l) => l.type === "hunk").map((l) => l.content)).toEqual([
+      "@@ -1,1 +1,1 @@",
+      "@@ -40,1 +40,1 @@",
+    ]);
   });
 
   it("tracks old and new line numbers independently", () => {
@@ -47,12 +56,12 @@ describe("parsePatch", () => {
 
   it("ignores no-newline markers and empty lines", () => {
     const patch = ["@@ -1,1 +1,1 @@", "-old", "+new", "\\ No newline at end of file", ""].join("\n");
-    expect(parsePatch(patch).map((l) => l.content)).toEqual(["old", "new"]);
+    expect(parsePatch(patch).filter((l) => l.type !== "hunk").map((l) => l.content)).toEqual(["old", "new"]);
   });
 
   it("keeps leading whitespace that is part of the code", () => {
     const patch = ["@@ -1,1 +1,1 @@", "+  const x = 1;", "+"].join("\n");
-    expect(parsePatch(patch).map((l) => l.content)).toEqual(["  const x = 1;", ""]);
+    expect(parsePatch(patch).filter((l) => l.type !== "hunk").map((l) => l.content)).toEqual(["  const x = 1;", ""]);
   });
 
   it("returns nothing for a patch without a hunk header", () => {
@@ -61,12 +70,23 @@ describe("parsePatch", () => {
 });
 
 describe("toFileDiffs", () => {
-  it("drops files GitHub reported without a patch (binary / too large)", () => {
+  it("keeps files GitHub reported without a patch, with no lines", () => {
     const diffs = toFileDiffs([
       { filename: "src/a.ts", additions: 1, deletions: 0, patch: "@@ -1 +1 @@\n+x" },
       { filename: "logo.png", additions: 0, deletions: 0 },
     ]);
-    expect(diffs.map((d) => d.path)).toEqual(["src/a.ts"]);
+    expect(diffs.map((d) => [d.path, d.scope, d.lines.length])).toEqual([
+      ["src/a.ts", "full", 2],
+      ["logo.png", "no-patch", 0],
+    ]);
+  });
+
+  it("applies the review scopes it is given", () => {
+    const [diff] = toFileDiffs(
+      [{ filename: "a.ts", additions: 1, deletions: 0, patch: "@@ -1 +1 @@\n+x" }],
+      ["over-limit"],
+    );
+    expect(diff?.scope).toBe("over-limit");
   });
 
   it("preserves addition and deletion counts", () => {

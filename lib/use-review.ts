@@ -1,79 +1,120 @@
 "use client";
 
 import { useObject } from "@ai-sdk/react";
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { reviewSchema } from "@/lib/review-schema";
-import { anchorReviewLines, type PartialReview } from "@/lib/review-core";
-import { reviewCache, reviewCacheKey } from "@/lib/review-cache";
-import type { FileDiff } from "@/lib/types";
+import type { PartialReview } from "@/lib/review-core";
+import { reviewCache } from "@/lib/review-cache";
+import {
+  INCOMPLETE_REVIEW_MESSAGE,
+  describeReviewError,
+  type ReviewStatus,
+} from "@/lib/review-status";
 
-type SubmitBody = Parameters<ReturnType<typeof useObject>["submit"]>[0];
+export type ReviewRequest = { owner: string; repo: string; number: number };
 
-export function useReview(
-  prId: string | null,
-  files: FileDiff[],
-  cacheNamespace?: string | null,
-) {
-  // `prId` is only `pr-<number>`, which several repos can share. The object id
-  // is the SWR cache key, so two repos' #1 would otherwise share state.
-  const objectId =
-    prId && cacheNamespace ? `${cacheNamespace}|${prId}` : (prId ?? "review");
+type Run = {
+  key: string;
+  state: "streaming" | "done" | "stopped" | "error";
+  error?: string;
+};
 
-  const { object, submit, isLoading, error, stop } = useObject({
+/**
+ * Streams a review and tracks its state explicitly, per cache key
+ * (`owner/repo#number@headSha`). Only one review runs at a time; the object
+ * from `useObject` is shown only while it belongs to the active key.
+ */
+export function useReview(activeKey: string | null, options: { onUnauthorized: () => void }) {
+  const [run, setRun] = useState<Run | null>(null);
+  // The key of the request in flight. Read and written only in callbacks.
+  const pendingKey = useRef<string | null>(null);
+  const onUnauthorized = useRef(options.onUnauthorized);
+
+  const { object, submit, stop } = useObject({
     api: "/api/review",
     schema: reviewSchema,
-    id: objectId,
+    id: "cra-review",
+    onFinish: ({ object: finished, error }) => {
+      const key = pendingKey.current;
+      pendingKey.current = null;
+      if (!key) return;
+      if (error || !finished) {
+        setRun({ key, state: "error", error: INCOMPLETE_REVIEW_MESSAGE });
+        return;
+      }
+      // Only a complete, schema-valid review may be cached: a cache hit skips
+      // the request, so caching a partial result would freeze the gap.
+      reviewCache.set(key, finished);
+      setRun({ key, state: "done" });
+    },
+    onError: (error) => {
+      const key = pendingKey.current;
+      pendingKey.current = null;
+      if (!key) return;
+      const info = describeReviewError(error);
+      setRun({ key, state: "error", error: info.message });
+      if (info.unauthorized) onUnauthorized.current();
+    },
   });
 
-  // A review that was stopped or errored is partial; caching it would freeze
-  // the gap for every later visit.
-  const incomplete = useRef(false);
-
-  const cacheKey = useMemo(
-    () => (prId && files.length > 0 ? reviewCacheKey(objectId, files) : null),
-    [prId, objectId, files],
-  );
-
-  const cached = useMemo(
-    () => (cacheKey ? reviewCache.get(cacheKey) : undefined),
-    [cacheKey],
-  );
-
-  const review = cached ?? (object as PartialReview | undefined);
-
-  // Only a finished review may enter the cache. Writing while the stream is
-  // still running stores a truncated object, and since a cache hit skips the
-  // request, that truncation would become permanent.
-  const finished = !isLoading && !error && !incomplete.current;
-
+  const submitRef = useRef(submit);
   useEffect(() => {
-    if (!cacheKey || !finished || !review) return;
-    reviewCache.set(cacheKey, review);
-  }, [cacheKey, finished, review]);
+    submitRef.current = submit;
+    onUnauthorized.current = options.onUnauthorized;
+  });
 
-  const submitCached = useCallback(
-    (body: SubmitBody) => {
-      if (cacheKey && reviewCache.get(cacheKey)) return;
-      incomplete.current = false;
-      submit(body);
-    },
-    [cacheKey, submit],
-  );
+  /** Starts a review. Uses the cache unless `force` is set. */
+  const start = useCallback((key: string, request: ReviewRequest, force = false) => {
+    if (!force && reviewCache.get(key)) {
+      setRun(null);
+      return;
+    }
+    if (force) reviewCache.delete(key);
+    pendingKey.current = key;
+    setRun({ key, state: "streaming" });
+    void submitRef.current(request);
+  }, []);
 
-  const stopAndMark = useCallback(() => {
-    incomplete.current = true;
+  const stopReview = useCallback(() => {
+    const key = pendingKey.current;
+    pendingKey.current = null;
     stop();
+    if (key) setRun({ key, state: "stopped" });
   }, [stop]);
 
-  const issues = useMemo(() => anchorReviewLines(review, files), [review, files]);
+  /** Aborts any running review without marking it, e.g. when switching PRs. */
+  const cancel = useCallback(() => {
+    pendingKey.current = null;
+    stop();
+    setRun(null);
+  }, [stop]);
+
+  const current = run && run.key === activeKey ? run : null;
+  const runState = current?.state;
+  const cached = useMemo(
+    // Re-read after a run finishes, since that is when the cache is written.
+    () => (activeKey && runState !== "streaming" ? reviewCache.get(activeKey) : undefined),
+    [activeKey, runState],
+  );
+
+  let review: PartialReview | undefined;
+  let status: ReviewStatus;
+  if (current) {
+    status = current.state;
+    review = current.state === "done" ? (cached ?? (object as PartialReview)) : (object as PartialReview | undefined);
+  } else if (cached) {
+    status = "cached";
+    review = cached;
+  } else {
+    status = activeKey ? "ready" : "idle";
+  }
 
   return {
-    object: review,
-    issues,
-    submit: submitCached,
-    stop: stopAndMark,
-    isLoading: isLoading && !cached,
-    error,
-    fromCache: Boolean(cached),
+    review,
+    status,
+    error: current?.error,
+    start,
+    stop: stopReview,
+    cancel,
   };
 }

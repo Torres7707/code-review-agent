@@ -7,9 +7,10 @@ import { z } from "zod";
 export const reviewIssueSchema = z.object({
   severity: z.enum(["high", "medium", "low"]),
   title: z.string().describe("Short, specific name of the problem"),
-  file: z.string(),
-  startLine: z.number().int().describe("1-based line number in the new file"),
+  file: z.string().describe("Exact file path from the diff"),
+  startLine: z.number().int().describe("Line number printed in front of the offending line"),
   endLine: z.number().int().nullable().describe("Null unless the issue spans lines"),
+  quote: z.string().describe("The code on startLine, copied verbatim without the line number or +/- marker"),
   why: z.string(),
   fix: z.string(),
 });
