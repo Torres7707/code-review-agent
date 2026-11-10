@@ -7,6 +7,7 @@ import { Header } from "@/app/components/Header";
 import { IssueCards } from "@/app/components/IssueCards";
 import { RepoRail } from "@/app/components/RepoRail";
 import { useReview } from "@/lib/use-review";
+import { annotateDiffWithIssues } from "@/lib/review-core";
 import type { FileDiff, GitHubUser, PR, Repo } from "@/lib/types";
 
 async function getJson<T>(url: string): Promise<T | null> {
@@ -51,6 +52,33 @@ export function CodeReviewApp() {
     error: reviewError,
     stop,
   } = useReview(reviewedPrId, fileDiffs);
+
+  // The raw diff has no issue ids; stamp them on so both directions of the
+  // highlight can find the same line.
+  const annotatedDiffs = useMemo(
+    () => annotateDiffWithIssues(fileDiffs, issues),
+    [fileDiffs, issues],
+  );
+
+  // Clicking a card scrolls its line into view in the diff column.
+  useEffect(() => {
+    if (!activeIssueId) return;
+    const line = document.querySelector(
+      `[data-issue-id="${CSS.escape(activeIssueId)}"]`,
+    );
+    if (line) {
+      line.scrollIntoView({ block: "center", behavior: "smooth" });
+      return;
+    }
+    // No line in the diff maps to this issue (e.g. the file was skipped):
+    // scroll the file header into view instead of failing silently.
+    const issue = issues.find((i) => i.id === activeIssueId);
+    if (!issue) return;
+    const header = document.querySelector(
+      `[data-file-path="${CSS.escape(issue.file)}"]`,
+    );
+    header?.scrollIntoView({ block: "start", behavior: "smooth" });
+  }, [activeIssueId, issues]);
 
   // Latest submit without making it an effect dependency (see the review effect).
   const submitRef = useRef(submit);
@@ -205,7 +233,7 @@ export function CodeReviewApp() {
               onStop={stop}
             />
             <DiffView
-              files={fileDiffs}
+              files={annotatedDiffs}
               activeIssueId={activeIssueId}
               onLineClick={(id) => setActiveIssueId(id)}
               loading={diffsLoading}

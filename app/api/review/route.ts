@@ -1,4 +1,4 @@
-import { Output, streamText } from "ai";
+import { Output, createTextStreamResponse, streamText } from "ai";
 import { NextResponse } from "next/server";
 import { readSession } from "@/lib/github-auth";
 import { githubJson } from "@/lib/github";
@@ -96,7 +96,25 @@ export async function POST(req: Request) {
       output: Output.object({ schema: reviewSchema }),
     });
 
-    return result.toTextStreamResponse();
+    // `toTextStreamResponse` drops error parts, so a rejected schema or an
+    // upstream 500 closes the body with no bytes and the client reads it as
+    // "no issues found". Surface the failure in the text stream instead.
+    const text = result.fullStream.pipeThrough(
+      new TransformStream({
+        transform(part, controller) {
+          if (part.type === "text-delta") {
+            controller.enqueue(part.text);
+          } else if (part.type === "error") {
+            console.error("Review stream failed:", part.error);
+            controller.enqueue(
+              `\n[review failed] ${part.error instanceof Error ? part.error.message : String(part.error)}`,
+            );
+          }
+        },
+      }),
+    );
+
+    return createTextStreamResponse({ stream: text });
   } catch (error) {
     console.error(error);
     return NextResponse.json({ error: "Review failed" }, { status: 500 });

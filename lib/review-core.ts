@@ -66,7 +66,7 @@ export type PartialReviewIssue = {
   title?: string;
   file?: string;
   startLine?: number;
-  endLine?: number;
+  endLine?: number | null;
   why?: string;
   fix?: string;
 };
@@ -151,6 +151,46 @@ function nearest(target: number, candidates: number[]): number {
   return best;
 }
 
+/**
+ * DiffView only knows how to highlight a line when the line itself carries an
+ * `issueId`; the diff payload from GitHub never does. Stamp each issue onto the
+ * rendered line it anchors to so clicking a card (or a line) has something to
+ * match on both sides.
+ */
+export function annotateDiffWithIssues(files: FileDiff[], issues: Issue[]): FileDiff[] {
+  if (files.length === 0 || issues.length === 0) return files;
+
+  const byFile = new Map<string, Issue[]>();
+  for (const issue of issues) {
+    const match = matchDiffFile(issue.file, files);
+    if (!match) continue;
+    const list = byFile.get(match.path) ?? [];
+    list.push(issue);
+    byFile.set(match.path, list);
+  }
+
+  return files.map((file) => {
+    const fileIssues = byFile.get(file.path);
+    if (!fileIssues || fileIssues.length === 0) return file;
+
+    const lines = file.lines.map((line) => {
+      // A line can only map to one card; prefer the most severe.
+      const hit = fileIssues
+        .filter((issue) => issue.startLine === line.newNo)
+        .sort((a, b) => severityWeight(b.severity) - severityWeight(a.severity))[0];
+      return hit
+        ? { ...line, issueId: hit.id, severity: hit.severity }
+        : line;
+    });
+
+    return { ...file, lines };
+  });
+}
+
+function severityWeight(severity: Issue["severity"]): number {
+  return severity === "high" ? 3 : severity === "medium" ? 2 : 1;
+}
+
 /** Adapts the partially streamed review object to the Issue card shape. */
 export function issuesFromReview(
   review: PartialReview | null | undefined,
@@ -171,7 +211,7 @@ export function issuesFromReview(
       fix: item.fix ?? "",
       status: "open",
     };
-    if (item.endLine !== undefined) issue.endLine = item.endLine;
+    if (item.endLine !== undefined && item.endLine !== null) issue.endLine = item.endLine;
     return [issue];
   });
 }

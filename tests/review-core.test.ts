@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { anchorReviewLines, issuesFromReview } from "@/lib/review-core";
+import { anchorReviewLines, annotateDiffWithIssues, issuesFromReview } from "@/lib/review-core";
 import type { FileDiff } from "@/lib/types";
 
 function file(path: string, newLineNumbers: number[]): FileDiff {
@@ -109,5 +109,59 @@ describe("anchorReviewLines", () => {
     const [issue] = anchorReviewLines({ issues: [{ title: "x", file: "a.ts", startLine: 5 }] }, []);
 
     expect(issue).toMatchObject({ file: "a.ts", startLine: 5 });
+  });
+});
+
+describe("annotateDiffWithIssues", () => {
+  const diffs = [file("src/app/page.tsx", [10, 11, 12]), file("src/lib/useUser.ts", [1, 2, 3])];
+
+  it("stamps the issue id and severity onto the matching rendered line", () => {
+    const issues = anchorReviewLines(
+      { issues: [{ severity: "high", title: "x", file: "src/app/page.tsx", startLine: 11 }] },
+      diffs,
+    );
+
+    const result = annotateDiffWithIssues(diffs, issues);
+    const page = result.find((f) => f.path === "src/app/page.tsx")!;
+    const hit = page.lines.find((l) => l.newNo === 11)!;
+
+    expect(hit.issueId).toBe(issues[0]!.id);
+    expect(hit.severity).toBe("high");
+  });
+
+  it("leaves unrelated lines and files untouched", () => {
+    const issues = anchorReviewLines(
+      { issues: [{ title: "x", file: "src/app/page.tsx", startLine: 11 }] },
+      diffs,
+    );
+
+    const result = annotateDiffWithIssues(diffs, issues);
+    const other = result.find((f) => f.path === "src/lib/useUser.ts")!;
+
+    expect(other.lines.every((l) => l.issueId === null)).toBe(true);
+    expect(result.filter((f) => f.path === "src/app/page.tsx")[0]!.lines.filter((l) => l.issueId !== null)).toHaveLength(1);
+  });
+
+  it("prefers the higher severity when two issues share a line", () => {
+    const issues = anchorReviewLines(
+      {
+        issues: [
+          { severity: "low", title: "low", file: "src/app/page.tsx", startLine: 11 },
+          { severity: "high", title: "high", file: "src/app/page.tsx", startLine: 11 },
+        ],
+      },
+      diffs,
+    );
+
+    const result = annotateDiffWithIssues(diffs, issues);
+    const hit = result
+      .find((f) => f.path === "src/app/page.tsx")!
+      .lines.find((l) => l.newNo === 11)!;
+
+    expect(hit.severity).toBe("high");
+  });
+
+  it("returns the input unchanged when there are no issues", () => {
+    expect(annotateDiffWithIssues(diffs, [])).toBe(diffs);
   });
 });

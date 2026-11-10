@@ -23,6 +23,8 @@ function LineRow({
     <div
       role={interactive ? "button" : undefined}
       tabIndex={interactive ? 0 : undefined}
+      data-issue-id={line.issueId ?? undefined}
+      data-line-no={line.newNo ?? line.oldNo ?? undefined}
       onClick={
         interactive
           ? () => onLineClick(line.issueId!, line.newNo ?? line.oldNo ?? 0)
@@ -86,7 +88,7 @@ function FileDiffBlock({
   onLineClick: (issueId: string, lineNo: number) => void;
 }) {
   return (
-    <section className="border-b border-black/40">
+    <section key={file.path} className="border-b border-black/40" data-file-path={file.path}>
       <div className="flex items-center gap-3 bg-[var(--bg-panel)] px-4 py-2">
         <svg
           className="h-4 w-4 text-[var(--text-secondary)]"
